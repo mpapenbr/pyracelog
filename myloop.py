@@ -2,7 +2,7 @@
 
 import irsdk
 import time
-
+import re
 
 class PitInfo:
     car_idx = 0
@@ -11,6 +11,15 @@ class PitInfo:
     
     lane_enter_time = 0,    
     pit_stop_start_time = 0;
+
+class LapInfo:
+    car_idx = 0
+    laptime = 0    
+    sectors = []
+
+    lap_start_time = 0 # holds the session time when the lap begins
+    cur_sector = 0 # holds the current sector where the car is located
+    cur_sector_start_time = 0 # holds the session time when the current began
     
 
 
@@ -25,6 +34,7 @@ class DataStore:
     car_idx_on_pitroad = []
     session_time = 0
     work_pit_stop = {}
+    lap_info = {}
 
 # this is our State class, with some helpful variables
 class State:
@@ -32,6 +42,13 @@ class State:
     last_car_setup_tick = -1
     last_data = DataStore() # this holds my required data of the previous tick
     last_publish = -1
+    track_length = 0
+    pace_car_idx = 0
+
+    lastWI = None
+    lastDI = None
+    lastSI = None
+    lastSectorInfo = None
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -56,8 +73,11 @@ def save_step_data(data:DataStore):
     data.car_idx_on_pitroad = ir['CarIdxOnPitRoad']
 
 def log_current_info():
-    print(ir['CarIdxLapDistPct'][0:6])
+    # print(ir['CarIdxLapDistPct'][0:6])
+    pass 
     
+
+
 
 def handle_pitstops(data:DataStore):
     """
@@ -86,7 +106,7 @@ def handle_pitstops(data:DataStore):
 
         if (pit[i] and data.car_idx_on_pitroad[i] and i in data.work_pit_stop.keys()):
             pit_info = data.work_pit_stop[i]
-            track_length = 3900 # TODO: get this from weekend settings - this ist just ok for Watkins Glen Cup
+            track_length = state.track_length
             moveDistPct = abs(ir['CarIdxLapDistPct'][i]-data.car_idx_lap_dist_pct[i])            
             speed = moveDistPct*track_length/(current_ir_session_time() - data.session_time) * 3.6
             # print(f"moveDist: {moveDistPct} speed: {speed}")
@@ -107,11 +127,86 @@ def handle_pitstops(data:DataStore):
             pit_info.lane = current_ir_session_time() - pit_info.lane_enter_time 
             print(f"Car {i} left pit lane: duration: {pit_info.lane}")
 
+def get_current_sector(lapDitPct:float) -> int:
+    i = len(state.lastSectorInfo)-1    
+    try:
+        while lapDitPct < state.lastSectorInfo[i]['SectorStartPct']:
+            i = i - 1
+        return i
+        
+    except Exception as identifier:
+        print(f'{lapDitPct} {i}')
+        raise
+        
+
+
+def handle_cross_the_line(data:DataStore):
+    current = ir['CarIdxLapDistPct']
+    if (len(data.car_idx_lap_dist_pct) != len(current)):
+        return
+    for i in range(0, len(current)):
+        adjustedDistPct = current[i]
+        if (current[i]> -1 and current[i] < 0):
+            # there are some cases when crossing s/f where distPct is a small value negative value. 
+            # this gets adjusted to 0
+            print(f'{current_ir_session_time()} WARNING: Car {i} has invalid distPct of {current[i]}')
+            adjustedDistPct = 0
+            
+
+        if (adjustedDistPct < 0):            
+            continue
+
+        if i == state.pace_car_idx:
+            continue
+        
+        if i in data.lap_info.keys():
+            sector = get_current_sector(adjustedDistPct)
+            work = data.lap_info[i]
+            if (sector != work.cur_sector):
+                # sector change detected. compute the duration of the last sector
+                sector_time = current_ir_session_time() - work.cur_sector_start_time
+                work.sectors.append(sector_time)
+                print(f'New sector time car {i} sector {work.cur_sector}: {sector_time}')
+                work.cur_sector = sector
+                work.cur_sector_start_time = current_ir_session_time()
+
+        currentLap = ir['CarIdxLap'] 
+        if (currentLap[i] != data.car_idx_lap[i]):
+            if i in data.lap_info.keys():
+                # we have data from the previous beginning, lets calc now
+                work = data.lap_info[i]
+                work.laptime = current_ir_session_time() - work.lap_start_time
+                print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
+            
+            work = LapInfo()
+            work.car_idx = i
+            work.lap_start_time = current_ir_session_time()
+            work.cur_sector_start_time = work.lap_start_time
+            work.cur_sector = 0
+            work.sectors = []
+            data.lap_info[i] = work
+
+
+
+
+def handle_time_update(data:DataStore):
+    handle_cross_the_line(data)
+    
 def current_ir_session_time():
     return ir['SessionTime'];
 
+
 def process_changes_to_last_run(data:DataStore):
     handle_pitstops(data)    
+    handle_time_update(data)
+
+def get_track_length_in_meters(arg:str) -> float:
+    milesInKm = 1.60934
+    m = re.search(r'(?P<length>(\d+\.\d+)) (?P<unit>(km|mi))', arg) 
+    if (m.group('unit') == 'mi'):
+        return float(m.group('length')) * milesInKm * 1000;
+    else:
+        return float(m.group('length')) * 1000
 
 # our main loop, where we retrieve data
 # and do something useful with it
@@ -125,6 +220,34 @@ def loop():
     # and you will get incosistent data
     ir.freeze_var_buffer_latest()
 
+
+    if ir['WeekendInfo']:
+        if (ir['WeekendInfo'] != state.lastWI):
+            print(ir['WeekendInfo'])
+            state.lastWI = ir['WeekendInfo'];
+            state.track_length = get_track_length_in_meters(state.lastWI['TrackLength'])
+            print(f"Track length is {state.track_length:5.0f} m")
+        #print(ir['WeekendInfo']['TeamRacing'])
+
+
+    if ir['SplitTimeInfo']:
+        if (ir['SplitTimeInfo']['Sectors'] != state.lastSectorInfo):
+            print(ir['SplitTimeInfo'])
+            state.lastSectorInfo = ir['SplitTimeInfo']['Sectors'];
+
+    if ir['DriverInfo']:
+        if (ir['DriverInfo'] != state.lastDI):
+            print(ir['DriverInfo'])
+            state.lastDI = ir['DriverInfo'];
+            paceCarEntry = [value for value in state.lastDI['Drivers'] if value['CarIsPaceCar'] == 1]
+            state.pace_car_idx = paceCarEntry[0]['CarIdx']
+            print(f'PaceCar-Idx: {state.pace_car_idx}')
+
+    if ir['SessionInfo']:
+        if (ir['SessionInfo'] != state.lastSI):
+            print('got new SessionInfo record')
+            # print(ir['SessionInfo'])
+            state.lastSI = ir['SessionInfo'];
     # retrieve live telemetry data
     # check here for list of available variables
     # https://github.com/kutu/pyirsdk/blob/master/vars.txt
@@ -137,7 +260,7 @@ def loop():
         # this is the point where we want to send the data to the server. 
         # By now we just log something....
         log_current_info()
-        print('session time:', t)
+        # print('session time:', t)
         state.last_publish = t
 
     save_step_data(state.last_data)
