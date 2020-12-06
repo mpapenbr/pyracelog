@@ -3,6 +3,9 @@
 import irsdk
 import time
 import re
+import json 
+import websockets
+import asyncio
 
 class PitInfo:
     car_idx = 0
@@ -29,12 +32,21 @@ class DataStore:
     TODO: The data sent to the server is extracted from here
     """
     car_idx_position = []
+    car_idx_class_position = []
     car_idx_lap_dist_pct = []
     car_idx_lap = []
+    car_idx_lap_completed = []
+    
     car_idx_on_pitroad = []
     session_time = 0
+    session_time_remain = 0
+    session_time_of_day = 0
+    session_num = 0
+    session_flags = 0
+    
     work_pit_stop = {}
     lap_info = {}
+
 
 # this is our State class, with some helpful variables
 class State:
@@ -68,9 +80,18 @@ def check_iracing():
 
 def save_step_data(data:DataStore):
     data.session_time = current_ir_session_time()
+    data.session_time_remain = ir['SessionTimeRemain']
+    data.session_time_of_day = ir['SessionTimeOfDay']
+    data.session_laps_remain = ir['SessionLapsRemain']
+    data.session_num = ir['SessionNum']
+    data.session_flags = ir['SessionFlags']
     data.car_idx_lap = ir['CarIdxLap'] 
+    data.car_idx_lap_completed = ir['CarIdxLapCompleted'] 
+    data.car_idx_position = ir['CarIdxPosition'] 
+    data.car_idx_class_position = ir['CarIdxClassPosition'] 
     data.car_idx_lap_dist_pct = ir['CarIdxLapDistPct']
     data.car_idx_on_pitroad = ir['CarIdxOnPitRoad']
+    
 
 def log_current_info():
     # print(ir['CarIdxLapDistPct'][0:6])
