@@ -3,10 +3,13 @@
 import irsdk
 import time
 import re
-import json 
+import json
+from requests.sessions import session 
 import websockets
 import asyncio
-
+import requests
+import copy
+import gzip
 class PitInfo:
     car_idx = 0
     pit_lane_time: 0
@@ -43,7 +46,11 @@ class DataStore:
     session_time_of_day = 0
     session_num = 0
     session_flags = 0
-    
+
+    # collector for uploads
+
+    finished_pits = [] # all finished pit stop between 2 uploads are stored here
+
     work_pit_stop = {}
     lap_info = {}
 
@@ -56,11 +63,18 @@ class State:
     last_publish = -1
     track_length = 0
     pace_car_idx = 0
+    
 
     lastWI = None
     lastDI = None
     lastSI = None
     lastSectorInfo = None
+
+    driver_info_need_transfer = False
+    session_need_transfer = False
+
+    # racelog server
+    race_log_base_url = None
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -76,7 +90,25 @@ def check_iracing():
     elif not state.ir_connected and ir.startup() and ir.is_initialized and ir.is_connected:
         state.ir_connected = True
         print('irsdk connected')
-        
+        connect_racelog()
+        print('racelog connected')
+        state.json_log_file = open("send-data.json", "w")
+
+def connect_racelog():
+    ir.freeze_var_buffer_latest()    
+    
+    if (ir['SessionUniqueId'] == 1): 
+        data = {}
+    else:
+        data = {'sessionId': ir['SessionUniqueId']}
+    
+    # TODO: API-Key
+    resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
+    headers={'Content-Type': 'application/json'},
+    json=data)
+    # TODO: error handling
+    state.race_log_base_url = resp.headers['Location']
+    
 
 def save_step_data(data:DataStore):
     data.session_time = current_ir_session_time()
@@ -92,10 +124,83 @@ def save_step_data(data:DataStore):
     data.car_idx_lap_dist_pct = ir['CarIdxLapDistPct']
     data.car_idx_on_pitroad = ir['CarIdxOnPitRoad']
     
+def realRaceDriverEntry(d):            
+    return True;
 
 def log_current_info():
     # print(ir['CarIdxLapDistPct'][0:6])
-    pass 
+    race_data = {
+        'carIdxLapDistPct': state.last_data.car_idx_lap_dist_pct,
+        'carIdxPosition': state.last_data.car_idx_position,
+        'carIdxClassPosition': state.last_data.car_idx_class_position,
+        'carIdxLap': state.last_data.car_idx_lap,
+        'carIdxLapCompleted': state.last_data.car_idx_lap_completed,
+        'carIdxOnPitRoad': state.last_data.car_idx_on_pitroad,
+
+
+        'sessionTime': current_ir_session_time(),
+        'sessionTimeRemain': state.last_data.session_time_remain,
+        'sessionTimeOfDay': state.last_data.session_time_of_day,
+
+    }
+    pit_stops = [{
+        'carIdx': p.car_idx,
+        'pitLaneTime': p.pit_lane_time,
+        'pitStopTime': p.pit_stop_time,
+        'laneEnterTime': p.lane_enter_time,
+        'stopEnterTime': p.stop_enter_time
+    } for p in state.last_data.finished_pits]
+    
+    if (len(pit_stops) > 0):
+        print(f'{pit_stops}')
+
+    driver_info = []
+    if (state.driver_info_need_transfer):
+        driver_info = [{
+            'carIdx': di['CarIdx'],
+            'carId': di['CarID'],
+            'carClassId': di['CarClassID'],
+            'carClassShortName': di['CarClassShortName'],
+            'carNumber': di['CarNumber'],
+            'carNumberRaw': di['CarNumberRaw'],
+            'carName': di['CarScreenName'],
+            'carShortName': di['CarScreenNameShort'],
+            'iRating': di['IRating'],
+            'teamId': di['TeamID'],
+            'userId': di['UserID'],
+            'userName': di['UserName'],
+            'teamName': di['TeamName'],
+            
+        } for di in state.lastDI['Drivers'] if not (di['CarIsPaceCar']==1 or di['IsSpectator']==1)]
+        state.driver_info_need_transfer = False
+    result_info = []
+    if (state.session_need_transfer):
+        if state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions'] != None:
+            result_info = [{
+                'carIdx': ri['CarIdx'],
+                'classPosition': ri['ClassPosition'],
+                'lap': ri['Lap'],
+                'lapsComplete': ri['LapsComplete'],
+                'lapsDriven': ri['LapsDriven'],
+                'position': ri['Position'],
+                'reasonOut': ri['ReasonOutStr'],
+                'delta': ri['Time'],
+
+            } for ri in state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions']]
+            state.session_need_transfer = False
+
+    data = {'raceData': race_data, 'pitStops': pit_stops, 'driverData': driver_info, 'resultData': result_info}
+    json_data = json.dumps(data)
+    state.json_log_file.write(f'{json_data}\n')
+    # decompression is not yet implemented on server side
+    # post_data = gzip.compress(json.dumps(data).encode('utf-8'))
+    resp = requests.post(f"{state.race_log_base_url}/racedata",     
+    headers={'Content-Type': 'application/json'},
+    json=data)
+    if (resp.status_code != 200):
+        print(f"warning: {resp.status_code}")
+    else:
+        state.last_data.finished_pits = []
     
 
 
@@ -134,6 +239,7 @@ def handle_pitstops(data:DataStore):
             if (pit_info.pit_stop_start_time == 0 and  speed < 1):
                 print(f"Car {i} stopped at pit")
                 pit_info.pit_stop_start_time = current_ir_session_time()
+                pit_info.stop_enter_time = current_ir_session_time()
             
             if (pit_info.pit_stop_start_time != 0 and speed > 5):
                 print(f"Car {i} about to leave pit")            
@@ -145,8 +251,10 @@ def handle_pitstops(data:DataStore):
 
         if (not pit[i] and data.car_idx_on_pitroad[i] and i in data.work_pit_stop.keys()):
             pit_info = data.work_pit_stop[i]
-            pit_info.lane = current_ir_session_time() - pit_info.lane_enter_time 
-            print(f"Car {i} left pit lane: duration: {pit_info.lane}")
+            pit_info.pit_lane_time = current_ir_session_time() - pit_info.lane_enter_time 
+            print(f"Car {i} left pit lane: duration: {pit_info.pit_lane_time}")
+            data.finished_pits.append(copy.deepcopy(pit_info))
+            print(f"now in finished_pits: {data.finished_pits}")
 
 def get_current_sector(lapDitPct:float) -> int:
     i = len(state.lastSectorInfo)-1    
@@ -260,15 +368,17 @@ def loop():
         if (ir['DriverInfo'] != state.lastDI):
             print(ir['DriverInfo'])
             state.lastDI = ir['DriverInfo'];
-            paceCarEntry = [value for value in state.lastDI['Drivers'] if value['CarIsPaceCar'] == 1]
-            state.pace_car_idx = paceCarEntry[0]['CarIdx']
+            # paceCarEntry = [value for value in state.lastDI['Drivers'] if value['CarIsPaceCar'] == 1]
+            state.pace_car_idx = ir['DriverInfo']['PaceCarIdx']
             print(f'PaceCar-Idx: {state.pace_car_idx}')
+            state.driver_info_need_transfer = True
 
     if ir['SessionInfo']:
         if (ir['SessionInfo'] != state.lastSI):
             print('got new SessionInfo record')
             # print(ir['SessionInfo'])
             state.lastSI = ir['SessionInfo'];
+            state.session_need_transfer = True
     # retrieve live telemetry data
     # check here for list of available variables
     # https://github.com/kutu/pyirsdk/blob/master/vars.txt

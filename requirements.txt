@@ -1,3 +1,4 @@
 pyirsdk
 pyyaml
 websockets
+requests
