@@ -10,13 +10,15 @@ import asyncio
 import requests
 import copy
 import gzip
+from datetime import datetime
 class PitInfo:
     car_idx = 0
-    pit_lane_time: 0
-    pit_stop_time: 0
+    pit_lane_time = 0
+    pit_stop_time= 0
     
-    lane_enter_time = 0,    
-    pit_stop_start_time = 0;
+    lane_enter_time = 0   
+    pit_stop_start_time = 0
+    stop_enter_time = 0
 
 class LapInfo:
     car_idx = 0
@@ -30,34 +32,45 @@ class LapInfo:
 
 
 class DataStore:
-    """
-    This holds data retrieved/computed on every step. 
-    TODO: The data sent to the server is extracted from here
-    """
-    car_idx_position = []
-    car_idx_class_position = []
-    car_idx_lap_dist_pct = []
-    car_idx_lap = []
-    car_idx_lap_completed = []
-    
-    car_idx_on_pitroad = []
-    session_time = 0
-    session_time_remain = 0
-    session_time_of_day = 0
-    session_num = 0
-    session_flags = 0
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_values()
 
-    # collector for uploads
+    def reset_values(self):
+        """
+        This holds data retrieved/computed on every step. 
+        TODO: The data sent to the server is extracted from here
+        """
+        self.car_idx_position = []        
+        self.car_idx_class_position = []
+        self.car_idx_lap_dist_pct = []
+        self.car_idx_lap = []
+        self.car_idx_lap_completed = []
+        self.car_idx_last_laptime = []
+        
+        self.car_idx_on_pitroad = []
+        self.session_tick = 0
+        self.session_time = 0
+        self.session_time_remain = 0
+        self.session_time_of_day = 0
+        self.session_num = 0
+        self.session_flags = 0
+        self.session_state = 0
 
-    finished_pits = [] # all finished pit stop between 2 uploads are stored here
+        self.car_idx_lap_sectors = [64][:]
+        # collector for uploads
 
-    work_pit_stop = {}
-    lap_info = {}
+        self.finished_pits = [] # all finished pit stop between 2 uploads are stored here
+        self.finished_laps = [] # all finished laps between 2 uploads are stored here
+
+        self.work_pit_stop = {}
+        self.lap_info = {}
 
 
 # this is our State class, with some helpful variables
 class State:
     ir_connected = False
+
     last_car_setup_tick = -1
     last_data = DataStore() # this holds my required data of the previous tick
     last_publish = -1
@@ -76,6 +89,31 @@ class State:
     # racelog server
     race_log_base_url = None
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.ir_connected = False
+        self.reset_values()
+
+    def reset_values(self):
+        self.last_car_setup_tick = -1
+        self.last_data = DataStore() # this holds my required data of the previous tick
+        self.last_publish = -1
+        self.track_length = 0
+        self.pace_car_idx = 0
+        
+
+        self.lastWI = None
+        self.lastDI = None
+        self.lastSI = None
+        self.lastSectorInfo = None
+
+        self.driver_info_need_transfer = False
+        self.session_need_transfer = False
+
+        # racelog server
+        self.race_log_base_url = None
+
+
 # here we check if we are connected to iracing
 # so we can retrieve some data
 def check_iracing():
@@ -89,10 +127,12 @@ def check_iracing():
         print('irsdk disconnected')
     elif not state.ir_connected and ir.startup() and ir.is_initialized and ir.is_connected:
         state.ir_connected = True
+        state.reset_values()
         print('irsdk connected')
         connect_racelog()
         print('racelog connected')
-        state.json_log_file = open("send-data.json", "w")
+        timestr = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        state.json_log_file = open(f"send-data-{timestr}.json", "w")
 
 def connect_racelog():
     ir.freeze_var_buffer_latest()    
@@ -103,7 +143,7 @@ def connect_racelog():
         data = {'sessionId': ir['SessionUniqueId']}
     
     # TODO: API-Key
-    resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
+    resp = requests.post("http://localhost:8082/raceevents/request",     
     headers={'Content-Type': 'application/json'},
     json=data)
     # TODO: error handling
@@ -112,23 +152,32 @@ def connect_racelog():
 
 def save_step_data(data:DataStore):
     data.session_time = current_ir_session_time()
+    data.session_tick = ir['SessionTick']
     data.session_time_remain = ir['SessionTimeRemain']
     data.session_time_of_day = ir['SessionTimeOfDay']
     data.session_laps_remain = ir['SessionLapsRemain']
     data.session_num = ir['SessionNum']
     data.session_flags = ir['SessionFlags']
+    data.session_state = ir['SessionState']
     data.car_idx_lap = ir['CarIdxLap'] 
     data.car_idx_lap_completed = ir['CarIdxLapCompleted'] 
     data.car_idx_position = ir['CarIdxPosition'] 
     data.car_idx_class_position = ir['CarIdxClassPosition'] 
     data.car_idx_lap_dist_pct = ir['CarIdxLapDistPct']
     data.car_idx_on_pitroad = ir['CarIdxOnPitRoad']
+    data.car_idx_last_laptime = ir['CarIdxLastLapTime']
     
 def realRaceDriverEntry(d):            
     return True;
 
 def log_current_info():
     # print(ir['CarIdxLapDistPct'][0:6])
+
+    sectors = [[] for x in range(64)];
+    for item in state.last_data.lap_info.values():
+        # print(f'{item.car_idx}: f:{item.sectors}')
+        sectors[item.car_idx] = item.sectors
+
     race_data = {
         'carIdxLapDistPct': state.last_data.car_idx_lap_dist_pct,
         'carIdxPosition': state.last_data.car_idx_position,
@@ -136,11 +185,17 @@ def log_current_info():
         'carIdxLap': state.last_data.car_idx_lap,
         'carIdxLapCompleted': state.last_data.car_idx_lap_completed,
         'carIdxOnPitRoad': state.last_data.car_idx_on_pitroad,
+        'carIdxLastLapTime': state.last_data.car_idx_last_laptime,
 
+        'carIdxLapSectors': sectors,
 
         'sessionTime': current_ir_session_time(),
+        'sessionTick': state.last_data.session_tick,
         'sessionTimeRemain': state.last_data.session_time_remain,
         'sessionTimeOfDay': state.last_data.session_time_of_day,
+        'sessionNum': state.last_data.session_num,
+        'sessionFlags': state.last_data.session_flags,
+        'sessionState': state.last_data.session_state,
 
     }
     pit_stops = [{
@@ -151,8 +206,12 @@ def log_current_info():
         'stopEnterTime': p.stop_enter_time
     } for p in state.last_data.finished_pits]
     
-    if (len(pit_stops) > 0):
-        print(f'{pit_stops}')
+   
+    own_laps = [{
+        'carIdx': p.car_idx,
+        'lapTime': p.laptime,
+        'sectors': p.sectors
+    } for p in state.last_data.finished_laps]
 
     driver_info = []
     if (state.driver_info_need_transfer):
@@ -189,7 +248,7 @@ def log_current_info():
             } for ri in state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions']]
             state.session_need_transfer = False
 
-    data = {'raceData': race_data, 'pitStops': pit_stops, 'driverData': driver_info, 'resultData': result_info}
+    data = {'raceData': race_data, 'pitStops': pit_stops, 'driverData': driver_info, 'resultData': result_info, 'ownLaps': own_laps}
     json_data = json.dumps(data)
     state.json_log_file.write(f'{json_data}\n')
     # decompression is not yet implemented on server side
@@ -201,6 +260,7 @@ def log_current_info():
         print(f"warning: {resp.status_code}")
     else:
         state.last_data.finished_pits = []
+        state.last_data.finished_laps = []
     
 
 
@@ -224,7 +284,7 @@ def handle_pitstops(data:DataStore):
         return
     for i in range(0, len(pit)):
         if (pit[i] and not data.car_idx_on_pitroad[i]):
-            print(f"Car {i} entered pit")
+            #print(f"Car {i} entered pit")
             work = PitInfo()
             work.car_idx = i
             work.lane_enter_time = current_ir_session_time()
@@ -237,14 +297,14 @@ def handle_pitstops(data:DataStore):
             speed = moveDistPct*track_length/(current_ir_session_time() - data.session_time) * 3.6
             # print(f"moveDist: {moveDistPct} speed: {speed}")
             if (pit_info.pit_stop_start_time == 0 and  speed < 1):
-                print(f"Car {i} stopped at pit")
+                #print(f"Car {i} stopped at pit")
                 pit_info.pit_stop_start_time = current_ir_session_time()
                 pit_info.stop_enter_time = current_ir_session_time()
             
             if (pit_info.pit_stop_start_time != 0 and speed > 5):
-                print(f"Car {i} about to leave pit")            
+                #print(f"Car {i} about to leave pit")            
                 pit_info.pit_stop_time= current_ir_session_time() - pit_info.pit_stop_start_time
-                print(f"Car {i} pit stop duration: {pit_info.pit_stop_time}")
+                #print(f"Car {i} pit stop duration: {pit_info.pit_stop_time}")
                 pit_info.pit_stop_start_time = 0 # reset the pit stop timer
 
 
@@ -252,9 +312,9 @@ def handle_pitstops(data:DataStore):
         if (not pit[i] and data.car_idx_on_pitroad[i] and i in data.work_pit_stop.keys()):
             pit_info = data.work_pit_stop[i]
             pit_info.pit_lane_time = current_ir_session_time() - pit_info.lane_enter_time 
-            print(f"Car {i} left pit lane: duration: {pit_info.pit_lane_time}")
+            #print(f"Car {i} left pit lane: duration: {pit_info.pit_lane_time}")
             data.finished_pits.append(copy.deepcopy(pit_info))
-            print(f"now in finished_pits: {data.finished_pits}")
+            #print(f"now in finished_pits: {data.finished_pits}")
 
 def get_current_sector(lapDitPct:float) -> int:
     i = len(state.lastSectorInfo)-1    
@@ -295,7 +355,7 @@ def handle_cross_the_line(data:DataStore):
                 # sector change detected. compute the duration of the last sector
                 sector_time = current_ir_session_time() - work.cur_sector_start_time
                 work.sectors.append(sector_time)
-                print(f'New sector time car {i} sector {work.cur_sector}: {sector_time}')
+                # print(f'New sector time car {i} sector {work.cur_sector}: {sector_time}')
                 work.cur_sector = sector
                 work.cur_sector_start_time = current_ir_session_time()
 
@@ -305,7 +365,8 @@ def handle_cross_the_line(data:DataStore):
                 # we have data from the previous beginning, lets calc now
                 work = data.lap_info[i]
                 work.laptime = current_ir_session_time() - work.lap_start_time
-                print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
+                # print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
+                data.finished_laps.append(copy.deepcopy(work))
             
             work = LapInfo()
             work.car_idx = i
@@ -352,7 +413,7 @@ def loop():
 
     if ir['WeekendInfo']:
         if (ir['WeekendInfo'] != state.lastWI):
-            print(ir['WeekendInfo'])
+            #print(ir['WeekendInfo'])
             state.lastWI = ir['WeekendInfo'];
             state.track_length = get_track_length_in_meters(state.lastWI['TrackLength'])
             print(f"Track length is {state.track_length:5.0f} m")
@@ -361,12 +422,12 @@ def loop():
 
     if ir['SplitTimeInfo']:
         if (ir['SplitTimeInfo']['Sectors'] != state.lastSectorInfo):
-            print(ir['SplitTimeInfo'])
+            #print(ir['SplitTimeInfo'])
             state.lastSectorInfo = ir['SplitTimeInfo']['Sectors'];
 
     if ir['DriverInfo']:
         if (ir['DriverInfo'] != state.lastDI):
-            print(ir['DriverInfo'])
+            #print(ir['DriverInfo'])
             state.lastDI = ir['DriverInfo'];
             # paceCarEntry = [value for value in state.lastDI['Drivers'] if value['CarIsPaceCar'] == 1]
             state.pace_car_idx = ir['DriverInfo']['PaceCarIdx']
