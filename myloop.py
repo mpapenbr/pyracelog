@@ -1,5 +1,6 @@
 #!python3
 
+from json import encoder
 import irsdk
 import time
 import re
@@ -10,6 +11,7 @@ import asyncio
 import requests
 import copy
 import gzip
+import codecs
 from datetime import datetime
 class PitInfo:
     car_idx = 0
@@ -58,6 +60,9 @@ class DataStore:
         self.session_state = 0
 
         self.car_idx_lap_sectors = [64][:]
+        self.car_idx_speed = [] # car speed  (calculated)
+        self.car_idx_delta = [] # delta to car in front (by position)
+        self.car_idx_dist_meters = [] # distance in m to car in front (right now for debugging)
         # collector for uploads
 
         self.finished_pits = [] # all finished pit stop between 2 uploads are stored here
@@ -74,6 +79,7 @@ class State:
     last_car_setup_tick = -1
     last_data = DataStore() # this holds my required data of the previous tick
     last_publish = -1
+    last_session_num = -1 # we need this to detect session change
     track_length = 0
     pace_car_idx = 0
     
@@ -100,6 +106,7 @@ class State:
         self.last_publish = -1
         self.track_length = 0
         self.pace_car_idx = 0
+        self.last_session_num = -1
         
 
         self.lastWI = None
@@ -125,6 +132,8 @@ def check_iracing():
         # we are shutting down ir library (clearing all internal variables)
         ir.shutdown()
         print('irsdk disconnected')
+        state.json_log_file.close()
+
     elif not state.ir_connected and ir.startup() and ir.is_initialized and ir.is_connected:
         state.ir_connected = True
         state.reset_values()
@@ -132,7 +141,8 @@ def check_iracing():
         connect_racelog()
         print('racelog connected')
         timestr = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        state.json_log_file = open(f"send-data-{timestr}.json", "w")
+        state.json_log_file = codecs.open(f"send-data-{timestr}.json", "w", encoding='utf-8')
+        # state.json_log_file = open(f"send-data-{timestr}.json", "w")
 
 def connect_racelog():
     ir.freeze_var_buffer_latest()    
@@ -143,7 +153,8 @@ def connect_racelog():
         data = {'sessionId': ir['SessionUniqueId']}
     
     # TODO: API-Key
-    resp = requests.post("http://localhost:8082/raceevents/request",     
+    #resp = requests.post("http://localhost:8082/raceevents/request",     
+    resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
     headers={'Content-Type': 'application/json'},
     json=data)
     # TODO: error handling
@@ -170,6 +181,11 @@ def save_step_data(data:DataStore):
 def realRaceDriverEntry(d):            
     return True;
 
+def handle_new_session():
+    state.last_data.reset_values()
+    state.last_session_num = ir['SessionNum']
+    state.last_publish = -1
+
 def log_current_info():
     # print(ir['CarIdxLapDistPct'][0:6])
 
@@ -177,6 +193,8 @@ def log_current_info():
     for item in state.last_data.lap_info.values():
         # print(f'{item.car_idx}: f:{item.sectors}')
         sectors[item.car_idx] = item.sectors
+        
+    
 
     race_data = {
         'carIdxLapDistPct': state.last_data.car_idx_lap_dist_pct,
@@ -188,6 +206,9 @@ def log_current_info():
         'carIdxLastLapTime': state.last_data.car_idx_last_laptime,
 
         'carIdxLapSectors': sectors,
+        'carIdxSpeed': state.last_data.car_idx_speed,
+        'carIdxDelta': state.last_data.car_idx_delta,
+        'carIdxDistMeters': state.last_data.car_idx_dist_meters,
 
         'sessionTime': current_ir_session_time(),
         'sessionTick': state.last_data.session_tick,
@@ -249,7 +270,7 @@ def log_current_info():
             state.session_need_transfer = False
 
     data = {'raceData': race_data, 'pitStops': pit_stops, 'driverData': driver_info, 'resultData': result_info, 'ownLaps': own_laps}
-    json_data = json.dumps(data)
+    json_data = json.dumps(data, ensure_ascii=False)
     state.json_log_file.write(f'{json_data}\n')
     # decompression is not yet implemented on server side
     # post_data = gzip.compress(json.dumps(data).encode('utf-8'))
@@ -381,7 +402,41 @@ def handle_cross_the_line(data:DataStore):
 
 def handle_time_update(data:DataStore):
     handle_cross_the_line(data)
+
+def handle_speeds(data:DataStore):
+    currentPct = ir['CarIdxLapDistPct']
+    currentLap = ir['CarIdxLap']
+    if len(data.car_idx_lap_dist_pct) != len(currentPct):
+        return
+        
+    data.car_idx_speed = [0 for i in range(len(currentPct))]
+    data.car_idx_delta = [0 for i in range(len(currentPct))]
+    data.car_idx_dist_meters = [0 for i in range(len(currentPct))]
+    for i in range(len(currentPct)):
+        if (currentPct[i] > -1):            
+            moveDistPct = abs(currentPct[i]-data.car_idx_lap_dist_pct[i])       
+            delta_time = current_ir_session_time() - data.session_time
+            if delta_time != 0:
+                data.car_idx_speed[i] = moveDistPct*state.track_length/delta_time * 3.6
+            else:
+                data.car_idx_speed[i] = 0
     
+    currentRaceOrder = [(i,currentLap[i]+currentPct[i])  for i in range(0,len(currentLap))]
+    currentRaceOrder.sort(key = lambda k: k[1], reverse=True)
+    # prevRaceOrder = [(i,data.car_idx_lap[i] + data.car_idx_lap_dist_pct[i] )  for i in range(0,len(currentLap))]
+    # prevRaceOrder.sort(key = lambda k: k[1], reverse=True)
+
+    for i in range(1,len(currentRaceOrder)):          
+        item = currentRaceOrder[i]      
+        if (item[1] < 0):
+            continue
+        data.car_idx_dist_meters[item[0]] =  abs(currentPct[item[0]]-data.car_idx_lap_dist_pct[currentRaceOrder[i-1][0]]) * state.track_length            
+        if data.car_idx_speed[item[0]] == 0:
+            data.car_idx_delta[item[0]] = 999
+        else:
+            data.car_idx_delta[item[0]] = data.car_idx_dist_meters[item[0]] / (data.car_idx_speed[item[0]] / 3.6)
+
+
 def current_ir_session_time():
     return ir['SessionTime'];
 
@@ -389,6 +444,7 @@ def current_ir_session_time():
 def process_changes_to_last_run(data:DataStore):
     handle_pitstops(data)    
     handle_time_update(data)
+    handle_speeds(data)
 
 def get_track_length_in_meters(arg:str) -> float:
     milesInKm = 1.60934
@@ -410,6 +466,8 @@ def loop():
     # and you will get incosistent data
     ir.freeze_var_buffer_latest()
 
+    if ir['SessionNum'] != state.last_session_num:
+        handle_new_session()
 
     if ir['WeekendInfo']:
         if (ir['WeekendInfo'] != state.lastWI):
