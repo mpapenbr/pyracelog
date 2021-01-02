@@ -58,6 +58,12 @@ class DataStore:
         self.session_num = 0
         self.session_flags = 0
         self.session_state = 0
+        self.track_temp_crew = 0
+        self.track_temp = 0
+        self.air_temp = 0
+        self.air_pressure = 0
+        self.air_density = 0
+
 
         self.car_idx_lap_sectors = [64][:]
         self.car_idx_speed = [] # car speed  (calculated)
@@ -170,6 +176,11 @@ def save_step_data(data:DataStore):
     data.session_num = ir['SessionNum']
     data.session_flags = ir['SessionFlags']
     data.session_state = ir['SessionState']
+    data.air_density = ir['AirDensity']
+    data.air_pressure = ir['AirPressure']
+    data.air_temp = ir['AirTemp']
+    data.track_temp = ir['TrackTemp']
+    data.track_temp_crew = ir['TrackTempCrew']
     data.car_idx_lap = ir['CarIdxLap'] 
     data.car_idx_lap_completed = ir['CarIdxLapCompleted'] 
     data.car_idx_position = ir['CarIdxPosition'] 
@@ -177,6 +188,7 @@ def save_step_data(data:DataStore):
     data.car_idx_lap_dist_pct = ir['CarIdxLapDistPct']
     data.car_idx_on_pitroad = ir['CarIdxOnPitRoad']
     data.car_idx_last_laptime = ir['CarIdxLastLapTime']
+
     
 def realRaceDriverEntry(d):            
     return True;
@@ -217,6 +229,11 @@ def log_current_info():
         'sessionNum': state.last_data.session_num,
         'sessionFlags': state.last_data.session_flags,
         'sessionState': state.last_data.session_state,
+        'airDensity': state.last_data.air_density,
+        'airPressure': state.last_data.air_pressure,
+        'airTemp': state.last_data.air_temp,
+        'trackTemp': state.last_data.track_temp,
+        'trackTempCrew': state.last_data.track_temp_crew,
 
     }
     pit_stops = [{
@@ -257,16 +274,16 @@ def log_current_info():
     if (state.session_need_transfer):
         if state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions'] != None:
             result_info = [{
-                'carIdx': ri['CarIdx'],
-                'classPosition': ri['ClassPosition'],
-                'lap': ri['Lap'],
-                'lapsComplete': ri['LapsComplete'],
-                'lapsDriven': ri['LapsDriven'],
-                'position': ri['Position'],
-                'reasonOut': ri['ReasonOutStr'],
-                'delta': ri['Time'],
+                'carIdx': rp['CarIdx'],
+                'classPosition': rp['ClassPosition'],
+                'lap': rp['Lap'],
+                'lapsComplete': rp['LapsComplete'],
+                'lapsDriven': rp['LapsDriven'],
+                'position': rp['Position'],
+                'reasonOut': rp['ReasonOutStr'],
+                'delta': rp['Time'],
 
-            } for ri in state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions']]
+            } for rp in state.lastSI['Sessions'][ir['SessionNum']]['ResultsPositions']]
             state.session_need_transfer = False
 
     data = {'raceData': race_data, 'pitStops': pit_stops, 'driverData': driver_info, 'resultData': result_info, 'ownLaps': own_laps}
@@ -283,8 +300,36 @@ def log_current_info():
         state.last_data.finished_pits = []
         state.last_data.finished_laps = []
     
+def handle_weekend_info():
+    sessions = [{
+        'num': s['SessionNum'],
+        'name': s['SessionName'],
+        'type': s['SessionType']
+        } for s in ir['SessionInfo']['Sessions']]
+    data = {
+        'trackId': state.lastWI['TrackID'],
+        'trackNameShort': state.lastWI['TrackDisplayShortName'],
+        'trackNameLong': state.lastWI['TrackDisplayName'],
+        'trackConfig': state.lastWI['TrackConfigName'],
+        'trackLength': state.track_length,
+        'teamRacing': state.lastWI['TeamRacing'],
+        'numCarClasses': state.lastWI['NumCarClasses'],
+        'numCarTypes': state.lastWI['NumCarTypes'],
+        'eventStart': datetime.strptime(f"{state.lastWI['WeekendOptions']['Date']} {state.lastWI['WeekendOptions']['TimeOfDay']}", '%Y-%m-%d %I:%M %p').isoformat(),
+        'sessions': sessions
 
+    }
+    resp = requests.put(f"{state.race_log_base_url}",     
+    headers={'Content-Type': 'application/json'},
+    json=data)
+    if (resp.status_code != 200):
+        print(f"warning: {resp.status_code}")
 
+def delta_distance(a,b):
+    if a > b:
+        return a-b
+    else:
+        return 1-b+a
 
 def handle_pitstops(data:DataStore):
     """
@@ -314,8 +359,8 @@ def handle_pitstops(data:DataStore):
         if (pit[i] and data.car_idx_on_pitroad[i] and i in data.work_pit_stop.keys()):
             pit_info = data.work_pit_stop[i]
             track_length = state.track_length
-            moveDistPct = abs(ir['CarIdxLapDistPct'][i]-data.car_idx_lap_dist_pct[i])            
-            speed = moveDistPct*track_length/(current_ir_session_time() - data.session_time) * 3.6
+            move_dist_pct = delta_distance(ir['CarIdxLapDistPct'][i],data.car_idx_lap_dist_pct[i])            
+            speed = move_dist_pct*track_length/(current_ir_session_time() - data.session_time) * 3.6
             # print(f"moveDist: {moveDistPct} speed: {speed}")
             if (pit_info.pit_stop_start_time == 0 and  speed < 1):
                 #print(f"Car {i} stopped at pit")
@@ -404,33 +449,32 @@ def handle_time_update(data:DataStore):
     handle_cross_the_line(data)
 
 def handle_speeds(data:DataStore):
-    currentPct = ir['CarIdxLapDistPct']
-    currentLap = ir['CarIdxLap']
-    if len(data.car_idx_lap_dist_pct) != len(currentPct):
+    current_pct = ir['CarIdxLapDistPct']
+    current_lap = ir['CarIdxLap']
+    if len(data.car_idx_lap_dist_pct) != len(current_pct):
         return
         
-    data.car_idx_speed = [0 for i in range(len(currentPct))]
-    data.car_idx_delta = [0 for i in range(len(currentPct))]
-    data.car_idx_dist_meters = [0 for i in range(len(currentPct))]
-    for i in range(len(currentPct)):
-        if (currentPct[i] > -1):            
-            moveDistPct = abs(currentPct[i]-data.car_idx_lap_dist_pct[i])       
+    data.car_idx_speed = [0 for i in range(len(current_pct))]
+    data.car_idx_delta = [0 for i in range(len(current_pct))]
+    data.car_idx_dist_meters = [0 for i in range(len(current_pct))]
+    for i in range(len(current_pct)):
+        if (current_pct[i] > -1):            
+            move_dist_pct = delta_distance(current_pct[i],data.car_idx_lap_dist_pct[i])
             delta_time = current_ir_session_time() - data.session_time
             if delta_time != 0:
-                data.car_idx_speed[i] = moveDistPct*state.track_length/delta_time * 3.6
+                data.car_idx_speed[i] = move_dist_pct*state.track_length/delta_time * 3.6
             else:
                 data.car_idx_speed[i] = 0
     
-    currentRaceOrder = [(i,currentLap[i]+currentPct[i])  for i in range(0,len(currentLap))]
-    currentRaceOrder.sort(key = lambda k: k[1], reverse=True)
-    # prevRaceOrder = [(i,data.car_idx_lap[i] + data.car_idx_lap_dist_pct[i] )  for i in range(0,len(currentLap))]
-    # prevRaceOrder.sort(key = lambda k: k[1], reverse=True)
+    current_race_order = [(i, current_lap[i]+current_pct[i])  for i in range(0,len(current_lap))]
+    current_race_order.sort(key = lambda k: k[1], reverse=True)
+   
 
-    for i in range(1,len(currentRaceOrder)):          
-        item = currentRaceOrder[i]      
+    for i in range(1, len(current_race_order)):          
+        item = current_race_order[i]      
         if (item[1] < 0):
             continue
-        data.car_idx_dist_meters[item[0]] =  abs(currentPct[item[0]]-data.car_idx_lap_dist_pct[currentRaceOrder[i-1][0]]) * state.track_length            
+        data.car_idx_dist_meters[item[0]] =  delta_distance(data.car_idx_lap_dist_pct[current_race_order[i-1][0]], current_pct[item[0]]) * state.track_length            
         if data.car_idx_speed[item[0]] == 0:
             data.car_idx_delta[item[0]] = 999
         else:
@@ -454,6 +498,8 @@ def get_track_length_in_meters(arg:str) -> float:
     else:
         return float(m.group('length')) * 1000
 
+
+
 # our main loop, where we retrieve data
 # and do something useful with it
 def loop():
@@ -475,6 +521,7 @@ def loop():
             state.lastWI = ir['WeekendInfo'];
             state.track_length = get_track_length_in_meters(state.lastWI['TrackLength'])
             print(f"Track length is {state.track_length:5.0f} m")
+            handle_weekend_info()
         #print(ir['WeekendInfo']['TeamRacing'])
 
 
