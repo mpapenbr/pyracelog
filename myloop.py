@@ -24,6 +24,7 @@ class PitInfo:
 
 class LapInfo:
     car_idx = 0
+    lapno = 0
     laptime = 0    
     sectors = []
 
@@ -159,8 +160,8 @@ def connect_racelog():
         data = {'sessionId': ir['SessionUniqueId']}
     
     # TODO: API-Key
-    #resp = requests.post("http://localhost:8082/raceevents/request",     
-    resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
+    resp = requests.post("http://localhost:8082/raceevents/request",     
+    #resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
     headers={'Content-Type': 'application/json'},
     json=data)
     # TODO: error handling
@@ -190,8 +191,6 @@ def save_step_data(data:DataStore):
     data.car_idx_last_laptime = ir['CarIdxLastLapTime']
 
     
-def realRaceDriverEntry(d):            
-    return True;
 
 def handle_new_session():
     state.last_data.reset_values()
@@ -247,6 +246,7 @@ def log_current_info():
    
     own_laps = [{
         'carIdx': p.car_idx,
+        'lapNo': p.lapno,
         'lapTime': p.laptime,
         'sectors': p.sectors
     } for p in state.last_data.finished_laps]
@@ -436,6 +436,7 @@ def handle_cross_the_line(data:DataStore):
             
             work = LapInfo()
             work.car_idx = i
+            work.lapno = currentLap[i]
             work.lap_start_time = current_ir_session_time()
             work.cur_sector_start_time = work.lap_start_time
             work.cur_sector = 0
@@ -474,7 +475,7 @@ def handle_speeds(data:DataStore):
         item = current_race_order[i]      
         if (item[1] < 0):
             continue
-        data.car_idx_dist_meters[item[0]] =  delta_distance(data.car_idx_lap_dist_pct[current_race_order[i-1][0]], current_pct[item[0]]) * state.track_length            
+        data.car_idx_dist_meters[item[0]] =  delta_distance(current_pct[current_race_order[i-1][0]], current_pct[item[0]]) * state.track_length            
         if data.car_idx_speed[item[0]] == 0:
             data.car_idx_delta[item[0]] = 999
         else:
