@@ -5,6 +5,7 @@ import irsdk
 import time
 import re
 import json
+import argparse
 from requests.sessions import session 
 import websockets
 import asyncio
@@ -12,7 +13,13 @@ import requests
 import copy
 import gzip
 import codecs
+import logging
+import logging.config
+import yaml
+
 from datetime import datetime
+from speedmap import SpeedMap
+
 class PitInfo:
     car_idx = 0
     pit_lane_time = 0
@@ -78,6 +85,9 @@ class DataStore:
         self.work_pit_stop = {}
         self.lap_info = {}
 
+        self.speedmap = None
+        
+
 
 # this is our State class, with some helpful variables
 class State:
@@ -89,6 +99,8 @@ class State:
     last_session_num = -1 # we need this to detect session change
     track_length = 0
     pace_car_idx = 0
+
+    last_log_speedmap = -1
     
 
     lastWI = None
@@ -127,6 +139,8 @@ class State:
         # racelog server
         self.race_log_base_url = None
 
+        self.last_log_speedmap = -1
+
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -145,7 +159,7 @@ def check_iracing():
         state.ir_connected = True
         state.reset_values()
         print('irsdk connected')
-        connect_racelog()
+        connect_racelog()        
         print('racelog connected')
         timestr = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         state.json_log_file = codecs.open(f"send-data-{timestr}.json", "w", encoding='utf-8')
@@ -466,21 +480,32 @@ def handle_speeds(data:DataStore):
                 data.car_idx_speed[i] = move_dist_pct*state.track_length/delta_time * 3.6
             else:
                 data.car_idx_speed[i] = 0
+            if ir['CarIdxOnPitRoad'][i] == False:
+                car_class_id = next(filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers']))['CarClassID']
+                data.speedmap.process(current_pct[i], data.car_idx_speed[i], i, car_class_id)
+
     
     current_race_order = [(i, current_lap[i]+current_pct[i])  for i in range(0,len(current_lap))]
     current_race_order.sort(key = lambda k: k[1], reverse=True)
    
+    
 
     for i in range(1, len(current_race_order)):          
         item = current_race_order[i]      
         if (item[1] < 0):
             continue
+        car_in_front_pos = current_pct[current_race_order[i-1][0]]
+        current_car_pos = current_pct[item[0]]
         data.car_idx_dist_meters[item[0]] =  delta_distance(current_pct[current_race_order[i-1][0]], current_pct[item[0]]) * state.track_length            
         if data.car_idx_speed[item[0]] == 0:
             data.car_idx_delta[item[0]] = 999
         else:
-            data.car_idx_delta[item[0]] = data.car_idx_dist_meters[item[0]] / (data.car_idx_speed[item[0]] / 3.6)
+            car_class_id = next(filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers']))['CarClassID']
+            delta_by_car_class_speedmap = data.speedmap.compute_delta_time(car_class_id, car_in_front_pos, current_car_pos)
+            data.car_idx_delta[item[0]] = delta_by_car_class_speedmap
 
+def log_speedmap():
+    state.last_data.speedmap.log_car_classes()
 
 def current_ir_session_time():
     return ir['SessionTime'];
@@ -523,6 +548,7 @@ def loop():
             state.track_length = get_track_length_in_meters(state.lastWI['TrackLength'])
             print(f"Track length is {state.track_length:5.0f} m")
             handle_weekend_info()
+            state.last_data.speedmap = SpeedMap(state.track_length)
         #print(ir['WeekendInfo']['TeamRacing'])
 
 
@@ -560,6 +586,11 @@ def loop():
         log_current_info()
         # print('session time:', t)
         state.last_publish = t
+    
+    # Debuggin the speedmap every 60s
+    if (t - state.last_log_speedmap) > 60:
+        log_speedmap()
+        state.last_log_speedmap = t
 
     save_step_data(state.last_data)
 
@@ -575,6 +606,10 @@ def loop():
     # ir.cam_switch_pos(0, 1)
 
 if __name__ == '__main__':
+
+    with open('logging.yaml', 'r') as f:
+        config = yaml.safe_load(f.read())
+        logging.config.dictConfig(config)
     # initializing ir and state
     ir = irsdk.IRSDK()
     state = State()

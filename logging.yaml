@@ -1,0 +1,39 @@
+version: 1
+formatters:
+  simple:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  verysimple:
+    format: '%(asctime)s - %(message)s'
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: simple
+    stream: ext://sys.stdout
+  speedmap-data:
+    class: logging.FileHandler
+    formatter: verysimple
+    filename: speedmap-data.log
+  
+  speedmap-compute:
+    class: logging.FileHandler
+    formatter: verysimple
+    filename: speedmap-compute.log
+
+loggers:
+  sampleLogger:
+    level: DEBUG
+    handlers: [console]
+    propagate: no
+  SpeedMapData:
+    level: DEBUG
+    handlers: [speedmap-data]
+    propagate: no
+  SpeedMapCompute:
+    level: CRITICAL
+    handlers: [speedmap-compute]
+    propagate: no
+
+root:
+  level: DEBUG
+  handlers: [console]
