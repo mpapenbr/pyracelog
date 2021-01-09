@@ -162,19 +162,21 @@ def check_iracing():
         connect_racelog()        
         print('racelog connected')
         timestr = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        state.json_log_file = codecs.open(f"send-data-{timestr}.json", "w", encoding='utf-8')
+        state.json_log_file = codecs.open(f"logs/json/send-data-{timestr}.json", "w", encoding='utf-8')
         # state.json_log_file = open(f"send-data-{timestr}.json", "w")
 
 def connect_racelog():
     ir.freeze_var_buffer_latest()    
     
-    if (ir['SessionUniqueId'] == 1): 
+    if (ir['WeekendInfo']['SessionID'] == 0): 
         data = {}
     else:
-        data = {'sessionId': ir['SessionUniqueId']}
+        data = {
+            'sessionId': ir['WeekendInfo']['SessionID']            
+            }
     
     # TODO: API-Key
-    resp = requests.post("http://localhost:8082/raceevents/request",     
+    resp = requests.post("http://host.docker.internal:8082/raceevents/request",     
     #resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
     headers={'Content-Type': 'application/json'},
     json=data)
@@ -329,6 +331,7 @@ def handle_weekend_info():
         'teamRacing': state.lastWI['TeamRacing'],
         'numCarClasses': state.lastWI['NumCarClasses'],
         'numCarTypes': state.lastWI['NumCarTypes'],
+        'heatRacing': state.lastWI['HeatRacing'],
         'eventStart': datetime.strptime(f"{state.lastWI['WeekendOptions']['Date']} {state.lastWI['WeekendOptions']['TimeOfDay']}", '%Y-%m-%d %I:%M %p').isoformat(),
         'sessions': sessions
 
@@ -339,11 +342,25 @@ def handle_weekend_info():
     if (resp.status_code != 200):
         print(f"warning: {resp.status_code}")
 
+def gate(v):
+    if v < 0:
+        return 0
+    if v > 1:
+        return 1
+    return v
+
 def delta_distance(a,b):
-    if a > b:
+    if a >= b:
         return a-b
     else:
-        return 1-b+a
+        return a+1-b
+
+def delta_to_prev(a,b):
+    d = abs(a-b)    
+    if d > 0.5:
+        return 1-d
+    else:
+        return d
 
 def handle_pitstops(data:DataStore):
     """
@@ -373,8 +390,9 @@ def handle_pitstops(data:DataStore):
         if (pit[i] and data.car_idx_on_pitroad[i] and i in data.work_pit_stop.keys()):
             pit_info = data.work_pit_stop[i]
             track_length = state.track_length
-            move_dist_pct = delta_distance(ir['CarIdxLapDistPct'][i],data.car_idx_lap_dist_pct[i])            
+            move_dist_pct = delta_distance(gate(ir['CarIdxLapDistPct'][i]),gate(data.car_idx_lap_dist_pct[i]))            
             speed = move_dist_pct*track_length/(current_ir_session_time() - data.session_time) * 3.6
+            
             # print(f"moveDist: {moveDistPct} speed: {speed}")
             if (pit_info.pit_stop_start_time == 0 and  speed < 1):
                 #print(f"Car {i} stopped at pit")
@@ -418,7 +436,7 @@ def handle_cross_the_line(data:DataStore):
         if (current[i]> -1 and current[i] < 0):
             # there are some cases when crossing s/f where distPct is a small value negative value. 
             # this gets adjusted to 0
-            print(f'{current_ir_session_time()} WARNING: Car {i} has invalid distPct of {current[i]}')
+            logger.info(f'SessionTime: {current_ir_session_time():.2f} WARNING: Car {i} has invalid distPct of {current[i]}')
             adjustedDistPct = 0
             
 
@@ -436,8 +454,13 @@ def handle_cross_the_line(data:DataStore):
                 sector_time = current_ir_session_time() - work.cur_sector_start_time
                 work.sectors.append(sector_time)
                 # print(f'New sector time car {i} sector {work.cur_sector}: {sector_time}')
-                work.cur_sector = sector
-                work.cur_sector_start_time = current_ir_session_time()
+                new_lap = sector < work.cur_sector                
+                if new_lap: 
+                    pass
+                else:
+                    work.cur_sector = sector
+                    work.cur_sector_start_time = current_ir_session_time()
+
 
         currentLap = ir['CarIdxLap'] 
         if (currentLap[i] != data.car_idx_lap[i]):
@@ -445,6 +468,7 @@ def handle_cross_the_line(data:DataStore):
                 # we have data from the previous beginning, lets calc now
                 work = data.lap_info[i]
                 work.laptime = current_ir_session_time() - work.lap_start_time
+                logger.debug(f'SessionTime: {current_ir_session_time():.0f} idx: {i} currentLap: {currentLap[i]} last: {data.car_idx_lap[i]} LapStart: {work.lap_start_time:.0f} Time: {work.laptime:.3f}')
                 # print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
                 data.finished_laps.append(copy.deepcopy(work))
             
@@ -468,21 +492,32 @@ def handle_speeds(data:DataStore):
     current_lap = ir['CarIdxLap']
     if len(data.car_idx_lap_dist_pct) != len(current_pct):
         return
-        
+    min_move_dist_pct = 0.1/state.track_length
     data.car_idx_speed = [0 for i in range(len(current_pct))]
     data.car_idx_delta = [0 for i in range(len(current_pct))]
     data.car_idx_dist_meters = [0 for i in range(len(current_pct))]
     for i in range(len(current_pct)):
-        if (current_pct[i] > -1):            
-            move_dist_pct = delta_distance(current_pct[i],data.car_idx_lap_dist_pct[i])
+        if current_pct[i] > -1 and data.car_idx_lap_dist_pct[i] > -1:            
+            move_dist_pct = delta_to_prev(gate(current_pct[i]),gate(data.car_idx_lap_dist_pct[i]))
             delta_time = current_ir_session_time() - data.session_time
             if delta_time != 0:
-                data.car_idx_speed[i] = move_dist_pct*state.track_length/delta_time * 3.6
+                if move_dist_pct < min_move_dist_pct or move_dist_pct > (1-min_move_dist_pct):                    
+                    if ir['CarIdxOnPitRoad'] == False:
+                        logger.debug(f'SessionTime: {current_ir_session_time():.0f} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} did not move min distance')
+                    continue
+
+                speed = move_dist_pct*state.track_length/delta_time * 3.6
+                if speed > 400:
+                    logger.warning(f'SessionTime: {current_ir_session_time():.0f} Speed > 400: {speed} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} dist(m): {move_dist_pct*state.track_length} deltaTime: {delta_time}')
+                    data.car_idx_speed[i] = -1
+                else:    
+                    data.car_idx_speed[i] = speed
             else:
                 data.car_idx_speed[i] = 0
-            if ir['CarIdxOnPitRoad'][i] == False:
+            if ir['CarIdxOnPitRoad'][i] == False and data.car_idx_speed[i] > 0:
                 car_class_id = next(filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers']))['CarClassID']
-                data.speedmap.process(current_pct[i], data.car_idx_speed[i], i, car_class_id)
+                if data.speedmap != None:
+                    data.speedmap.process(current_pct[i], data.car_idx_speed[i], i, car_class_id)
 
     
     current_race_order = [(i, current_lap[i]+current_pct[i])  for i in range(0,len(current_lap))]
@@ -496,8 +531,8 @@ def handle_speeds(data:DataStore):
             continue
         car_in_front_pos = current_pct[current_race_order[i-1][0]]
         current_car_pos = current_pct[item[0]]
-        data.car_idx_dist_meters[item[0]] =  delta_distance(current_pct[current_race_order[i-1][0]], current_pct[item[0]]) * state.track_length            
-        if data.car_idx_speed[item[0]] == 0:
+        data.car_idx_dist_meters[item[0]] =  delta_distance(gate(current_pct[current_race_order[i-1][0]]), gate(current_pct[item[0]])) * state.track_length            
+        if data.car_idx_speed[item[0]] <= 0:
             data.car_idx_delta[item[0]] = 999
         else:
             car_class_id = next(filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers']))['CarClassID']
@@ -611,6 +646,7 @@ if __name__ == '__main__':
         config = yaml.safe_load(f.read())
         logging.config.dictConfig(config)
     # initializing ir and state
+    logger = logging.getLogger("racelog")
     ir = irsdk.IRSDK()
     state = State()
 

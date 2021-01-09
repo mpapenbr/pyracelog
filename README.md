@@ -6,6 +6,13 @@ The idea behind this tool is to extract race data every second and send them to 
 
 The backend should further process the data in order to provide further analysis data. The focus is on lap times and pit stops for endurance races.
 
+
+## Caveats
+
+When using the replay function in iRacing at least the following attributes gets -1 
+
+- car_idx_position
+- car_idx_class_position
 ## Delta times
 
 By now they are just functioning as a placeholder since their value is not based on the correct/meaningful speed.
@@ -21,3 +28,5 @@ In short:
     
 # Resources
 [1] Telemetry variables https://members.iracing.com/jforum/posts/list/3400/1470675.page#12019603
+
+

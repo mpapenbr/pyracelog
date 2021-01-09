@@ -19,6 +19,11 @@ handlers:
     class: logging.FileHandler
     formatter: verysimple
     filename: speedmap-compute.log
+  
+  racelog:
+    class: logging.FileHandler
+    formatter: simple
+    filename: racelog.log
 
 loggers:
   sampleLogger:
@@ -33,7 +38,11 @@ loggers:
     level: CRITICAL
     handlers: [speedmap-compute]
     propagate: no
+  racelog:
+    level: DEBUG
+    handlers: [racelog,console]
+    propagate: no
 
 root:
   level: DEBUG
-  handlers: [console]
+  handlers: [console,racelog]

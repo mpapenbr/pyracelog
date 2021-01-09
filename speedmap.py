@@ -107,7 +107,11 @@ class SpeedMap:
         if track_pos_pct > 1:
             return 0
         else:
-            return math.floor(track_pos_pct * self.track_length / self.chunk_size)
+            idx = math.floor(track_pos_pct * self.track_length / self.chunk_size)
+            # safeguard: sometimes we get track_pos_pct of 1.0 which would exceed the chunks. In such cases we take the last chunk.
+            if idx >= self.num_chunks:
+                return idx-1
+            return idx
 
     def process(self, track_pos, speed, car_idx, car_class_id):
         
