@@ -11,19 +11,28 @@ handlers:
     formatter: simple
     stream: ext://sys.stdout
   speedmap-data:
-    class: logging.FileHandler
+    class: logging.handlers.RotatingFileHandler 
     formatter: verysimple
     filename: speedmap-data.log
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
   
   speedmap-compute:
-    class: logging.FileHandler
+    class: logging.handlers.RotatingFileHandler 
     formatter: verysimple
     filename: speedmap-compute.log
-  
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
+
   racelog:
-    class: logging.FileHandler
+    class: logging.handlers.RotatingFileHandler 
     formatter: simple
     filename: racelog.log
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
 
 loggers:
   sampleLogger:

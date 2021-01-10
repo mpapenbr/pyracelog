@@ -128,6 +128,9 @@ class SpeedMap:
         chunk_idx_current_car = self.__get_chunk_idx(pct_current_car)
 
         car_class_chunks = self.car_classes_dict.get(car_class_id)
+        if (car_class_chunks == None):
+            self.logger.warn(f'No chunk_data for carClassId {car_class_id} available. return -1')            
+            return -1
         chunk_data = []
         if (chunk_idx_car_in_front < chunk_idx_current_car):
             #  we need [0:chunk_idx_car_in_front+1] and [chunk_idx_current_car:]            

@@ -34,12 +34,34 @@ class LapInfo:
     lapno = 0
     laptime = 0    
     sectors = []
-
+    is_out_lap = False 
+    is_in_lap = False
+    is_incomplete = False 
     lap_start_time = 0 # holds the session time when the lap begins
+    lap_start_pct = 0 # holds the track pos when the lap started (used to detect incomplete laps)
     cur_sector = 0 # holds the current sector where the car is located
     cur_sector_start_time = 0 # holds the session time when the current began
     
-
+    
+class InitData:
+    """
+    docstring
+    """
+    def __init__(self) -> None:
+        super().__init__()
+        self.weekend = False
+        self.sectors = False
+        self.drivers = False
+        self.speedmap = False
+    
+    def required_data_present(self):
+        """
+        docstring
+        """
+        return self.weekend & self.sectors & self.drivers & self.speedmap
+    
+    def __repr__(self) -> str:
+        return f'weekend: {self.weekend} sectors: {self.sectors} drivers: {self.drivers} speedmap: {self.speedmap}'
 
 class DataStore:
     def __init__(self) -> None:
@@ -86,6 +108,8 @@ class DataStore:
         self.lap_info = {}
 
         self.speedmap = None
+        print("DataStore.reset_values called")
+        
         
 
 
@@ -97,6 +121,7 @@ class State:
     last_data = DataStore() # this holds my required data of the previous tick
     last_publish = -1
     last_session_num = -1 # we need this to detect session change
+    last_session_unique_id = -1 # we need this to detect session change
     track_length = 0
     pace_car_idx = 0
 
@@ -108,6 +133,7 @@ class State:
     lastSI = None
     lastSectorInfo = None
 
+    
     driver_info_need_transfer = False
     session_need_transfer = False
 
@@ -120,12 +146,14 @@ class State:
         self.reset_values()
 
     def reset_values(self):
+        self.init_data = InitData()
         self.last_car_setup_tick = -1
         self.last_data = DataStore() # this holds my required data of the previous tick
         self.last_publish = -1
         self.track_length = 0
         self.pace_car_idx = 0
         self.last_session_num = -1
+        self.last_session_unique_id = -1
         
 
         self.lastWI = None
@@ -182,6 +210,7 @@ def connect_racelog():
     json=data)
     # TODO: error handling
     state.race_log_base_url = resp.headers['Location']
+    logger.info(f'Event url: {state.race_log_base_url}')
     
 
 def save_step_data(data:DataStore):
@@ -211,7 +240,10 @@ def save_step_data(data:DataStore):
 def handle_new_session():
     state.last_data.reset_values()
     state.last_session_num = ir['SessionNum']
+    state.last_session_unique_id = ir['SessionUniqueID']
     state.last_publish = -1
+    state.last_data.speedmap = SpeedMap(state.track_length)
+    logger.info(f'new unique session detected: {state.last_session_unique_id} sessionNum: {state.last_session_num}')
 
 def log_current_info():
     # print(ir['CarIdxLapDistPct'][0:6])
@@ -264,7 +296,11 @@ def log_current_info():
         'carIdx': p.car_idx,
         'lapNo': p.lapno,
         'lapTime': p.laptime,
-        'sectors': p.sectors
+        'sectors': p.sectors,
+        'inLap': p.is_in_lap,
+        'outLap': p.is_out_lap,
+        'incomplete': p.is_incomplete
+
     } for p in state.last_data.finished_laps]
 
     driver_info = []
@@ -431,6 +467,7 @@ def handle_cross_the_line(data:DataStore):
     current = ir['CarIdxLapDistPct']
     if (len(data.car_idx_lap_dist_pct) != len(current)):
         return
+    sf_tolerance_dist = 5/state.track_length  # if start of lap is behind this 5m it may be considered incomplete
     for i in range(0, len(current)):
         adjustedDistPct = current[i]
         if (current[i]> -1 and current[i] < 0):
@@ -456,36 +493,60 @@ def handle_cross_the_line(data:DataStore):
                 # print(f'New sector time car {i} sector {work.cur_sector}: {sector_time}')
                 new_lap = sector < work.cur_sector                
                 if new_lap: 
-                    pass
+                    current_lap = ir['CarIdxLap'] 
+                    work = data.lap_info[i]
+                    work.is_in_lap = ir['CarIdxOnPitRoad'][i]
+                    work.laptime = current_ir_session_time() - work.lap_start_time
+                    logger.debug(f'STime: {current_ir_session_time():8.2f} idx: {i:2d} currentLap: {current_lap[i]:3d} last: {data.car_idx_lap[i]:3d} LapStart: {work.lap_start_time:8.2f} Time: {work.laptime:7.3f} InLap: {work.is_in_lap} OutLap: {work.is_out_lap}')
+                    # print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
+                    if work.lap_start_pct > sf_tolerance_dist:
+                        logger.warning(f'STime: {current_ir_session_time():8.2f} idx: {i:2d} currentLap: {current_lap[i]:3d} last: {data.car_idx_lap[i]:3d} LapStart: {work.lap_start_time:8.2f} Time: {work.laptime:7.3f} InLap: {work.is_in_lap} OutLap: {work.is_out_lap} possible incomplete lap started at {work.lap_start_pct} {work.lap_start_pct*state.track_length:.0f} m')
+                        work.is_incomplete = True
+                    data.finished_laps.append(copy.deepcopy(work))
+
+                    work = LapInfo()
+                    work.car_idx = i
+                    work.lapno = current_lap[i]
+                    work.lap_start_time = current_ir_session_time()
+                    work.cur_sector_start_time = work.lap_start_time
+                    work.cur_sector = 0
+                    work.sectors = []
+                    work.is_out_lap = ir['CarIdxOnPitRoad'][i]
+                    work.lap_start_pct = adjustedDistPct
+                    
+                    data.lap_info[i] = work
                 else:
                     work.cur_sector = sector
                     work.cur_sector_start_time = current_ir_session_time()
-
-
-        currentLap = ir['CarIdxLap'] 
-        if (currentLap[i] != data.car_idx_lap[i]):
-            if i in data.lap_info.keys():
-                # we have data from the previous beginning, lets calc now
-                work = data.lap_info[i]
-                work.laptime = current_ir_session_time() - work.lap_start_time
-                logger.debug(f'SessionTime: {current_ir_session_time():.0f} idx: {i} currentLap: {currentLap[i]} last: {data.car_idx_lap[i]} LapStart: {work.lap_start_time:.0f} Time: {work.laptime:.3f}')
-                # print(f'Car {i}: laptime {work.laptime} sectors: {work.sectors}')
-                data.finished_laps.append(copy.deepcopy(work))
-            
+        else:
             work = LapInfo()
             work.car_idx = i
-            work.lapno = currentLap[i]
+            work.lapno = ir['CarIdxLap'][i] 
             work.lap_start_time = current_ir_session_time()
             work.cur_sector_start_time = work.lap_start_time
             work.cur_sector = 0
             work.sectors = []
+            work.is_out_lap = ir['CarIdxOnPitRoad'][i]
+            work.lap_start_pct = adjustedDistPct
             data.lap_info[i] = work
+            
+
+
+        
+                
+            
+            
 
 
 
 
 def handle_time_update(data:DataStore):
     handle_cross_the_line(data)
+
+def is_a_race_session():
+    if state.lastSI['Sessions'][state.last_session_num]['SessionType'] == 'Race':
+        return True
+    return False
 
 def handle_speeds(data:DataStore):
     current_pct = ir['CarIdxLapDistPct']
@@ -503,12 +564,12 @@ def handle_speeds(data:DataStore):
             if delta_time != 0:
                 if move_dist_pct < min_move_dist_pct or move_dist_pct > (1-min_move_dist_pct):                    
                     if ir['CarIdxOnPitRoad'] == False:
-                        logger.debug(f'SessionTime: {current_ir_session_time():.0f} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} did not move min distance')
+                        logger.debug(f'STime: {current_ir_session_time():.0f} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} did not move min distance')
                     continue
 
                 speed = move_dist_pct*state.track_length/delta_time * 3.6
                 if speed > 400:
-                    logger.warning(f'SessionTime: {current_ir_session_time():.0f} Speed > 400: {speed} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} dist(m): {move_dist_pct*state.track_length} deltaTime: {delta_time}')
+                    logger.warning(f'STime: {current_ir_session_time():.0f} Speed > 400: {speed} carIdx: {i} curPctRaw: {current_pct[i]} prevPctRaw: {data.car_idx_lap_dist_pct[i]} dist: {move_dist_pct} dist(m): {move_dist_pct*state.track_length} deltaTime: {delta_time}')
                     data.car_idx_speed[i] = -1
                 else:    
                     data.car_idx_speed[i] = speed
@@ -523,7 +584,8 @@ def handle_speeds(data:DataStore):
     current_race_order = [(i, current_lap[i]+current_pct[i])  for i in range(0,len(current_lap))]
     current_race_order.sort(key = lambda k: k[1], reverse=True)
    
-    
+    if is_a_race_session() == False:
+        return
 
     for i in range(1, len(current_race_order)):          
         item = current_race_order[i]      
@@ -535,9 +597,16 @@ def handle_speeds(data:DataStore):
         if data.car_idx_speed[item[0]] <= 0:
             data.car_idx_delta[item[0]] = 999
         else:
-            car_class_id = next(filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers']))['CarClassID']
-            delta_by_car_class_speedmap = data.speedmap.compute_delta_time(car_class_id, car_in_front_pos, current_car_pos)
-            data.car_idx_delta[item[0]] = delta_by_car_class_speedmap
+            # x1 = filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers'])
+            # y = next(x1)
+            for d in state.lastDI['Drivers']:
+                if d['CarIdx'] == i:
+                    car_class_id = d['CarClassID']
+                    if data.speedmap != None:
+                        delta_by_car_class_speedmap = data.speedmap.compute_delta_time(car_class_id, car_in_front_pos, current_car_pos)
+                        data.car_idx_delta[item[0]] = delta_by_car_class_speedmap
+                    else:
+                        data.car_idx_delta[item[0]] = 999
 
 def log_speedmap():
     state.last_data.speedmap.log_car_classes()
@@ -573,7 +642,7 @@ def loop():
     # and you will get incosistent data
     ir.freeze_var_buffer_latest()
 
-    if ir['SessionNum'] != state.last_session_num:
+    if ir['SessionUniqueID'] != state.last_session_unique_id:
         handle_new_session()
 
     if ir['WeekendInfo']:
@@ -584,6 +653,8 @@ def loop():
             print(f"Track length is {state.track_length:5.0f} m")
             handle_weekend_info()
             state.last_data.speedmap = SpeedMap(state.track_length)
+            state.init_data.weekend = True
+            state.init_data.speedmap = True
         #print(ir['WeekendInfo']['TeamRacing'])
 
 
@@ -591,6 +662,7 @@ def loop():
         if (ir['SplitTimeInfo']['Sectors'] != state.lastSectorInfo):
             #print(ir['SplitTimeInfo'])
             state.lastSectorInfo = ir['SplitTimeInfo']['Sectors'];
+            state.init_data.sectors = True
 
     if ir['DriverInfo']:
         if (ir['DriverInfo'] != state.lastDI):
@@ -600,19 +672,26 @@ def loop():
             state.pace_car_idx = ir['DriverInfo']['PaceCarIdx']
             print(f'PaceCar-Idx: {state.pace_car_idx}')
             state.driver_info_need_transfer = True
+            state.init_data.drivers = True
 
     if ir['SessionInfo']:
         if (ir['SessionInfo'] != state.lastSI):
-            print('got new SessionInfo record')
+            # print('got new SessionInfo record')
             # print(ir['SessionInfo'])
             state.lastSI = ir['SessionInfo'];
             state.session_need_transfer = True
+
+    # before anything gets computes let check if all required data is presen
+
+    if state.init_data.required_data_present() == False:
+        logger.debug(f"Required data is still data missing: {state.init_data}")
+        return            
     # retrieve live telemetry data
     # check here for list of available variables
     # https://github.com/kutu/pyirsdk/blob/master/vars.txt
     # this is not full list, because some cars has additional
     # specific variables, like break bias, wings adjustment, etc
-
+    
     t = ir['SessionTime']
     process_changes_to_last_run(state.last_data)
     if ((t - state.last_publish) > 1):
