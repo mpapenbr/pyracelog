@@ -40,7 +40,7 @@ loggers:
     handlers: [console]
     propagate: no
   SpeedMapData:
-    level: DEBUG
+    level: INFO
     handlers: [speedmap-data]
     propagate: no
   SpeedMapCompute:

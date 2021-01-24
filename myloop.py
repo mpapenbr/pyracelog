@@ -291,7 +291,7 @@ def log_current_info():
         'stopEnterTime': p.stop_enter_time
     } for p in state.last_data.finished_pits]
     
-   
+    # TODO: migrate booleans to bits in some flag attr
     own_laps = [{
         'carIdx': p.car_idx,
         'lapNo': p.lapno,
@@ -467,7 +467,7 @@ def handle_cross_the_line(data:DataStore):
     current = ir['CarIdxLapDistPct']
     if (len(data.car_idx_lap_dist_pct) != len(current)):
         return
-    sf_tolerance_dist = 5/state.track_length  # if start of lap is behind this 5m it may be considered incomplete
+    sf_tolerance_dist = 15/state.track_length  # if start of lap is behind this 15m it may be considered incomplete
     for i in range(0, len(current)):
         adjustedDistPct = current[i]
         if (current[i]> -1 and current[i] < 0):
