@@ -2,3 +2,4 @@ pyirsdk
 pyyaml
 websockets
 requests
+autobahn

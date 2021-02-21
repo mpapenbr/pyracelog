@@ -1,0 +1,9 @@
+server:
+  url: http://host.docker.internal:8082
+  
+
+crossbar: 
+  
+  url: http://host.docker.internal:8090
+  realm: racelog
+  topic: racelog.state

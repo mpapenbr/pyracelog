@@ -1,6 +1,7 @@
 #!python3
 
 from json import encoder
+from os import system
 import irsdk
 import time
 import re
@@ -20,6 +21,14 @@ import yaml
 from datetime import datetime
 from speedmap import SpeedMap
 
+class GlobalConfig():
+    def __init__(self, url="http://hostname:port"):        
+        self.url = url
+    
+    def merge(self, **entries):
+        self.__dict__.update(entries)    
+
+
 class PitInfo:
     car_idx = 0
     pit_lane_time = 0
@@ -37,6 +46,7 @@ class LapInfo:
     is_out_lap = False 
     is_in_lap = False
     is_incomplete = False 
+    is_on_pit_road = False
     lap_start_time = 0 # holds the session time when the lap begins
     lap_start_pct = 0 # holds the track pos when the lap started (used to detect incomplete laps)
     cur_sector = 0 # holds the current sector where the car is located
@@ -204,8 +214,11 @@ def connect_racelog():
             }
     
     # TODO: API-Key
-    resp = requests.post("http://host.docker.internal:8082/raceevents/request",     
+    #resp = requests.post("https://istint-backend-test.juelps.de/raceevents/request",     
+    #resp = requests.post("https://istint-backend.juelps.de/raceevents/request",     
+    #resp = requests.post("http://host.docker.internal:8082/raceevents/request",     
     #resp = requests.post("http://host.docker.internal:8080/raceevents/request",     
+    resp = requests.post(f"{globalConfig.url}/raceevents/request",     
     headers={'Content-Type': 'application/json'},
     json=data)
     # TODO: error handling
@@ -299,6 +312,7 @@ def log_current_info():
         'sectors': p.sectors,
         'inLap': p.is_in_lap,
         'outLap': p.is_out_lap,
+        'inPit': p.is_on_pit_road,
         'incomplete': p.is_incomplete
 
     } for p in state.last_data.finished_laps]
@@ -406,7 +420,10 @@ def handle_pitstops(data:DataStore):
     - from true to false: end pit lane time
     - if true and "car did not move": start pit stop timer
     - if true and "car moved": end pit stop timer
-      
+    
+    Additional the current lap is marked as "inPit" if the flag is true. 
+    See issue #12 which is about pit boundary being in synch with and s/f
+    
     """
     
     pit = ir['CarIdxOnPitRoad']
@@ -416,6 +433,10 @@ def handle_pitstops(data:DataStore):
     if (current_ir_session_time() == data.session_time):
         return
     for i in range(0, len(pit)):
+        if pit[i] and i in data.lap_info.keys():            
+            work = data.lap_info[i]
+            work.is_on_pit_road = True    
+
         if (pit[i] and not data.car_idx_on_pitroad[i]):
             #print(f"Car {i} entered pit")
             work = PitInfo()
@@ -642,7 +663,7 @@ def loop():
     # and you will get incosistent data
     ir.freeze_var_buffer_latest()
 
-    if ir['SessionUniqueID'] != state.last_session_unique_id:
+    if ir['SessionUniqueID'] != 0 and ir['SessionUniqueID'] != state.last_session_unique_id:
         handle_new_session()
 
     if ir['WeekendInfo']:
@@ -719,7 +740,40 @@ def loop():
     # and notice how this code changes it back every 1 sec
     # ir.cam_switch_pos(0, 1)
 
+
+# define some globals
+
+VERSION = "0.1"
+globalConfig = GlobalConfig()
+
+
 if __name__ == '__main__':
+
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--version', action='version', version='iRaceLog provider %s' % VERSION, help='show version and exit')
+    parser.add_argument('--url', help='sets the url for the backend')
+    parser.add_argument('--config',  help='use this config file', default="config.yaml")
+        
+    #args = parser.parse_known_args()
+    args = parser.parse_args()
+
+    configFilename = "config.yaml"
+    if args.config:
+        configFilename = args.config
+    try:
+        with open(configFilename, "r") as ymlfile:
+            cfg = yaml.safe_load(ymlfile)
+            if "server" in cfg.keys():
+                globalConfig.merge(**cfg['server'])
+    except IOError as e:
+        print(f'WARN: Could not open {configFilename}: {e}. continuing...')
+
+    if args.url:
+        globalConfig.url = args.url
+
+    print(f'Using this url: {globalConfig.url}')
+    #exit(1)
 
     with open('logging.yaml', 'r') as f:
         config = yaml.safe_load(f.read())
