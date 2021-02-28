@@ -1,0 +1,57 @@
+version: 1
+formatters:
+  simple:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  verysimple:
+    format: '%(asctime)s - %(message)s'
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: simple
+    stream: ext://sys.stdout
+  speedmap-data:
+    class: logging.handlers.RotatingFileHandler 
+    formatter: verysimple
+    filename: speedmap-data.log
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
+  
+  speedmap-compute:
+    class: logging.handlers.RotatingFileHandler 
+    formatter: verysimple
+    filename: speedmap-compute.log
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
+
+  racelog:
+    class: logging.handlers.RotatingFileHandler 
+    formatter: simple
+    filename: racelog-cb.log
+    maxBytes: 10485760 # 10MB
+    backupCount: 20
+    encoding: utf8
+
+loggers:
+  sampleLogger:
+    level: DEBUG
+    handlers: [console]
+    propagate: no
+  SpeedMapData:
+    level: INFO
+    handlers: [speedmap-data]
+    propagate: no
+  SpeedMapCompute:
+    level: CRITICAL
+    handlers: [speedmap-compute]
+    propagate: no
+  racelog:
+    level: DEBUG
+    handlers: [racelog,console]
+    propagate: no
+
+root:
+  level: DEBUG
+  handlers: [console,racelog]

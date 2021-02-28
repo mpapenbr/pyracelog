@@ -1,6 +1,7 @@
 import sys
 import re
 import logging
+from speedmap import SpeedMap
 
 CarsManifest = ['state','carIdx','carNum','userName','teamName','carClass','pos','pic','lap','lc','gap','interval','trackPos','speed','dist','pit','last','best']
 
@@ -51,6 +52,7 @@ class CarProcessor():
         self.prev_dist_pct = []
         self.prev_time = current_ir['SessionTime']
 
+
         milesInKm = 1.60934
         m = re.search(r'(?P<length>(\d+\.\d+)) (?P<unit>(km|mi))', current_ir['WeekendInfo']['TrackLength']) 
         if (m.group('unit') == 'mi'):
@@ -60,8 +62,10 @@ class CarProcessor():
         print(f"TrackLength: {self.track_length}")
         self.min_move_dist_pct = 0.1/self.track_length # if a car doesn't move 10cm in 1/60s 
 
+        self.speedmap = SpeedMap(self.track_length)
 
-    def process(self,ir):
+
+    def process(self,ir,msg_proc):
         for idx in range(64):     
             if idx == ir['DriverInfo']['PaceCarIdx']:
                 continue
@@ -72,8 +76,6 @@ class CarProcessor():
                 else:
                     work = self.lookup.get(idx)
                 work['state'] = 'RUN'
-                if ir['CarIdxOnPitRoad'][idx]:
-                    work['state'] = 'PIT'
                 work['carIdx'] = idx
                 work['carNum'] = self.driver_proc.car_number(idx)
                 work['userName'] = self.driver_proc.user_name(idx)
@@ -83,17 +85,29 @@ class CarProcessor():
                 work['pic'] = ir['CarIdxClassPosition'][idx]
                 work['lap'] = ir['CarIdxLap'][idx]
                 work['lc'] = ir['CarIdxLapCompleted'][idx]
-                #TODO work['gap'] = ""
-                #TODO work['interval'] = ""
+                work['dist'] = 0
+                work['gap'] = 0
+                work['interval'] = 0
                 work['trackPos'] = gate(ir['CarIdxLapDistPct'][idx])
                 work['last'] = ir['CarIdxLastLapTime'][idx]
                 work['best'] = ir['CarIdxBestLapTime'][idx]      
             
                 work['speed'] = self.calc_speed(ir, idx)
+                if ir['CarIdxOnPitRoad'][idx]:
+                    work['state'] = 'PIT'
+                if ir['CarIdxRPM'][idx] == -1:
+                    work['state'] = 'OUT'
+                elif getattr(work, 'speed') < 30 and not ir['CarIdxOnPitRoad'][idx]:
+                    work['state'] = 'SLOW'
+                    # TODO: think about one time message and condition when the same message may be issued again
+                    # msg_proc.add_car_slow(idx)
+                    
+
             else:
                 # handle those cars which have an entry in driver but do not appear valid in CarIdxLapDistPct
                 # these cars may be out of the race...
                 pass
+        self.calc_delta(ir)
         self.prev_dist_pct = ir['CarIdxLapDistPct'][:] # create a copy for next run
         self.prev_time = ir['SessionTime']
 
@@ -116,10 +130,50 @@ class CarProcessor():
             if (speed > 400):
                 self.logger.warning(f'STime: {ir["SessionTime"]:.0f} Speed > 400: {speed} carIdx: {idx} curPctRaw: {current_dist} prevPctRaw: {self.prev_dist_pct[idx]} dist: {move_dist_pct} dist(m): {move_dist_pct*self.track_length} deltaTime: {delta_time}')
                 return -1
-            # TODO: Speedmap !!
+            else:
+                if ir['CarIdxOnPitRoad'][idx] == False and speed > 0:
+                    car_class_id = self.driver_proc.car_class_id(idx)                    
+                    self.speedmap.process(current_dist, speed, idx, car_class_id)
             return speed
         else:
             return 0
+    
+    def calc_delta(self, ir):
+
+        current_race_order = [(i.carIdx, i.lap+i.trackPos)  for i in self.lookup.values()]
+        current_race_order.sort(key = lambda k: k[1], reverse=True)
+        #ordered = [self.lookup[item[0]] for item in current_race_order]
+
+        # current_race_order = [(i, ir['CarIdxLap'][i]+ir['CarIdxLapDistPct'][i])  for i in range(0,64)]
+        # current_race_order.sort(key = lambda k: k[1], reverse=True)
+        session_num = ir['SessionNum']
+        if ir['SessionInfo']['Sessions'][session_num]['SessionType'] != 'Race':
+            return
+        
+        current_pct = ir['CarIdxLapDistPct']
+        for i in range(1, len(current_race_order)):          
+            item = current_race_order[i]                  
+            if (item[1] < 0):
+                continue
+            work = self.lookup[item[0]]
+
+            car_in_front_pos = current_pct[current_race_order[i-1][0]]
+            current_car_pos = current_pct[item[0]]
+            # data.car_idx_dist_meters[item[0]] =  delta_distance(gate(current_pct[current_race_order[i-1][0]]), gate(current_pct[item[0]])) * self.track_length            
+            work['dist'] =  delta_distance(gate(current_pct[current_race_order[i-1][0]]), gate(current_pct[item[0]])) * self.track_length            
+            if getattr(work,'speed') <= 0:
+                work['interval'] = 999
+            else:
+                # x1 = filter(lambda x: x['CarIdx']==i, state.lastDI['Drivers'])
+                # y = next(x1)
+                for d in ir['DriverInfo']['Drivers']:
+                    if d['CarIdx'] == i:
+                        car_class_id = d['CarClassID']
+                        if self.speedmap != None:
+                            delta_by_car_class_speedmap = self.speedmap.compute_delta_time(car_class_id, car_in_front_pos, current_car_pos)
+                            work['interval'] = delta_by_car_class_speedmap
+                        else:
+                            work['interval'] = 999
 
     def manifest_output(self):
         

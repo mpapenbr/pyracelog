@@ -27,6 +27,24 @@ class MessageProcessor:
             'carNum': self.drivers.car_number(pitinfo.car_idx), 
             'carClass': self.drivers.car_class(pitinfo.car_idx), 
             'msg': f'#{self.drivers.car_number(pitinfo.car_idx)} ({self.drivers.user_name(pitinfo.car_idx)}) exited pitlane'})
+    
+    def add_driver_enter_car(self, car_idx):        
+        self.msg_buffer.append({
+            'type': 'Pits',
+            'subType':'Driver',
+            'carIdx': car_idx, 
+            'carNum': self.drivers.car_number(car_idx), 
+            'carClass': self.drivers.car_class(car_idx), 
+            'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) entered car'})
+    
+    def add_car_slow(self, car_idx):        
+        self.msg_buffer.append({
+            'type': 'Track',
+            'subType':'Driver',
+            'carIdx': car_idx, 
+            'carNum': self.drivers.car_number(car_idx), 
+            'carClass': self.drivers.car_class(car_idx), 
+            'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) car slow'})
 
     def manifest_output(self):
         return [[m[x] for x in MessagesManifest] for m in self.msg_buffer]

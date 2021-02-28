@@ -4,21 +4,30 @@ from model.pits import PitProcessor
 from model.driver import DriverProcessor
 from model.msgproc import MessageProcessor
 from model.session import SessionData
+from model.publisher import PublishItem, publish_to_server
 from requests.sessions import Session
-from model import Message, MessageType, StateMessage
+from model import Message, MessageType, StateMessage 
+from queue import Queue
+from threading import Thread
+
 import irsdk
 import time
 import asyncio
 import argparse
 import yaml
 import requests
+import logging
+import logging.config
+
 
 from autobahn.asyncio.component import Component, run
 
 class ConfigSection():
-    def __init__(self, url="http://hostname:port", rpcEndpoint="racelog.state"):        
+    def __init__(self, url="http://hostname:port", rpcEndpoint="racelog.state", topic="racelog.state"):        
         self.url = url
         self.rpcEndpoint = rpcEndpoint
+        self.topic = topic
+
     
     def merge(self, **entries):
         self.__dict__.update(entries)    
@@ -39,6 +48,8 @@ class State:
         self.lastSI = None
         # own entries start here
         self.last_session_state = -1
+        self.last_session_num = -1
+        self.last_session_unique_id = -1
         self.last_publish = -1
         self.msg_proc = None
         self.driver_proc = None
@@ -54,19 +65,25 @@ def publish_current_state():
     stateMsg = StateMessage(session = sessionData.manifest_output(), messages=messages, cars=cars, pits=pits)
     
     msg = Message(type=MessageType.STATE.value, payload=stateMsg.__dict__)
-    data = {'procedure': crossbarConfig.rpcEndpoint, 'args': [msg.__dict__]}
+
+    data = {'topic': crossbarConfig.rpcEndpoint, 'args': [msg.__dict__]}
     json_data = json.dumps(data, ensure_ascii=False)
-    
-    resp = requests.post(f"{crossbarConfig.url}/call",     
-        headers={'Content-Type': 'application/json'},
-        json=data
-    )
-    
-    if (resp.status_code != 200):
-        print(f"warning: {resp.status_code}")
-    else: 
-        state.msg_proc.clear_buffer()
-        state.pit_proc.clear_buffer()
+    to_publish = PublishItem(url=crossbarConfig.url, topic=crossbarConfig.topic, data=[msg.__dict__])
+    q.put(to_publish)
+    q.task_done()
+    state.msg_proc.clear_buffer()
+    state.pit_proc.clear_buffer()
+
+    if False:
+        resp = requests.post(f"{crossbarConfig.url}/call",     
+            headers={'Content-Type': 'application/json'},
+            json=data
+        )    
+        if (resp.status_code != 200):
+            print(f"warning: {resp.status_code}")
+        else: 
+            state.msg_proc.clear_buffer()
+            state.pit_proc.clear_buffer()
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -87,7 +104,20 @@ def check_iracing():
         state.pit_proc = PitProcessor(current_ir=ir, msg_proc=state.msg_proc, driver_proc=state.driver_proc)
         state.car_proc = CarProcessor(state.driver_proc, ir)
         state.last_session_state = ir['SessionState']
+        state.last_session_num = ir['SessionNum']
+        state.last_session_unique_id = ir['SessionUniqueID']
         print('irsdk connected')
+
+def handle_new_session():
+    state.msg_proc.clear_buffer()
+    state.pit_proc.clear_buffer()
+    # state.car_proc.clear_buffer()
+    state.last_session_num = ir['SessionNum']
+    state.last_session_unique_id = ir['SessionUniqueID']
+    state.last_publish = -1
+    # state.last_data.speedmap = SpeedMap(state.track_length)
+    logger.info(f'new unique session detected: {state.last_session_unique_id} sessionNum: {state.last_session_num}')
+
 
 # our main loop, where we retrieve data
 # and do something useful with it
@@ -108,6 +138,13 @@ def loop():
     # specific variables, like break bias, wings adjustment, etc
     t = ir['SessionTime']
     #print('session time:', t)
+    if t == 0.0:
+        # there are race situatione where the whole ir-Data are filled with 0 bytes. Get out of here imediately
+        logger.warning("Possible invalid data in ir - session time is 0.0. skipping loop")
+        return
+
+    if ir['SessionUniqueID'] != 0 and ir['SessionUniqueID'] != state.last_session_unique_id:
+        handle_new_session()
 
     # retrieve CarSetup from session data
     # we also check if CarSetup data has been updated
@@ -137,6 +174,7 @@ def loop():
         if (ir['DriverInfo'] != state.lastDI):
             #print(ir['DriverInfo'])
             state.lastDI = ir['DriverInfo'];
+            state.driver_proc.process(ir,state.msg_proc, state.pit_proc)
 
     if ir['SessionInfo']:
         if (ir['SessionInfo'] != state.lastSI):
@@ -149,8 +187,8 @@ def loop():
         state.last_session_state = ir['SessionState']
 
     state.pit_proc.process(ir)
-    state.driver_proc.process(ir)
-    state.car_proc.process(ir)
+    # state.driver_proc.process(ir)
+    state.car_proc.process(ir, state.msg_proc)
     #process_changes_to_last_run(state.last_data)
     if ((t - state.last_publish) > 1):
         # this is the point where we want to send the data to the server. 
@@ -162,7 +200,7 @@ def loop():
 
 VERSION = "0.1"
 crossbarConfig = ConfigSection()
-
+q = Queue()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -190,9 +228,16 @@ if __name__ == '__main__':
 
     print(f'Using this url: {crossbarConfig.url}')
 
+    with open('logging-crossbar.yaml', 'r') as f:
+        config = yaml.safe_load(f.read())
+        logging.config.dictConfig(config)
+    # initializing ir and state
+    logger = logging.getLogger("racelog")
+
     ir = irsdk.IRSDK()
     state = State()
-
+    publisher = Thread(group=None, target=publish_to_server, name="MyPublisher", args=(q,))
+    publisher.start()
     try:
         # infinite loop
         while True:
@@ -205,6 +250,6 @@ if __name__ == '__main__':
             # maximum you can use is 1/60
             # cause iracing updates data with 60 fps
             time.sleep(1/60)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:        
         # press ctrl+c to exit
         pass

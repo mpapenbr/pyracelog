@@ -1,14 +1,15 @@
 PitInfoManifest = ['carNum', 'type', 'enterTime', 'exitTime', 'laneTime', 'stintTime', 'lapEnter', 'lapExit']    
 
 class PitStopInfo:
-    def __init__(self, carIdx=-1) -> None:
+    def __init__(self, carIdx=-1, exit_time=-1, lap_exit=-1) -> None:
         self.car_idx = carIdx
         self.enter_time = -1
-        self.exit_time = -1
+        self.exit_time = exit_time
         self.driving_time = -1
         self.pit_lane_time = -1
         self.lap_enter = -1
-        self.lap_exit = -1
+        self.lap_exit = lap_exit
+        self.driver_changed = False
 
 
 class PitProcessor():
@@ -19,7 +20,7 @@ class PitProcessor():
         self.send_buffer = []
         self.lookup = {}
         for idx in range(64):
-            self.lookup[idx] = PitStopInfo(carIdx = idx)
+            self.lookup[idx] = PitStopInfo(carIdx = idx, exit_time=current_ir['SessionTime'], lap_exit=current_ir['CarIdxLap'][idx])
 
     def clear_buffer(self):
         self.send_buffer.clear()
@@ -28,6 +29,9 @@ class PitProcessor():
         for item in self.lookup.values():
             item.exit_time = ir['SessionTime']
             item.lap_exit = ir['CarIdxLap'][item.car_idx]
+    
+    def signal_driver_change(self, car_idx):
+        self.lookup[car_idx].driver_changed = True
 
     def process(self, ir):        
         for idx in range(64):            
@@ -37,6 +41,9 @@ class PitProcessor():
                 current = ir['CarIdxOnPitRoad'][idx]
                 if current != self.last_ir_pit_status[idx]:
                     pit_info = self.lookup[idx]                                        
+                    if pit_info.driver_changed and current:
+                        continue
+
                     if current:
                         pit_info.lap_enter = ir['CarIdxLap'][idx]
                         pit_info.enter_time = ir['SessionTime']                       
@@ -56,6 +63,7 @@ class PitProcessor():
                         pit_info.lap_exit = ir['CarIdxLap'][idx]
                         pit_info.exit_time = ir['SessionTime']                        
                         pit_info.pit_lane_time = pit_info.exit_time - pit_info.enter_time
+                        pit_info.driver_changed = False 
                         self.msg_proc.add_pit_exit_msg(pit_info)
                         self.send_buffer.append({
                             'carNum':self.driver_proc.car_number(idx),
