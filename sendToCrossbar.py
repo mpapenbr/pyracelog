@@ -1,9 +1,11 @@
 import json
-from model.cars import CarProcessor
-from model.pits import PitProcessor
+import hashlib
+
+from model.cars import CarProcessor, CarsManifest
+from model.pits import PitInfoManifest, PitProcessor
 from model.driver import DriverProcessor
-from model.msgproc import MessageProcessor
-from model.session import SessionData
+from model.msgproc import MessageProcessor, MessagesManifest
+from model.session import SessionData, SessionManifest
 from model.publisher import PublishItem, publish_to_server
 from requests.sessions import Session
 from model import Message, MessageType, StateMessage 
@@ -55,6 +57,7 @@ class State:
         self.driver_proc = None
         self.pit_proc = None
         self.car_proc = None
+        self.racelog_event_key = None
 
 def publish_current_state():
     # msg = Message(type=MessageType.STATE.value, payload={'session': {'sessionTime':ir['SessionTime']}})
@@ -66,9 +69,9 @@ def publish_current_state():
     
     msg = Message(type=MessageType.STATE.value, payload=stateMsg.__dict__)
 
-    data = {'topic': crossbarConfig.rpcEndpoint, 'args': [msg.__dict__]}
+    data = {'topic': f'{crossbarConfig.topic}.{state.racelog_event_key}', 'args': [msg.__dict__]}
     json_data = json.dumps(data, ensure_ascii=False)
-    to_publish = PublishItem(url=crossbarConfig.url, topic=crossbarConfig.topic, data=[msg.__dict__])
+    to_publish = PublishItem(url=crossbarConfig.url, topic=f'{crossbarConfig.topic}.{state.racelog_event_key}', data=[msg.__dict__])
     q.put(to_publish)
     q.task_done()
     state.msg_proc.clear_buffer()
@@ -84,6 +87,21 @@ def publish_current_state():
         else: 
             state.msg_proc.clear_buffer()
             state.pit_proc.clear_buffer()
+
+def register_service():
+    """
+        registers this timing provider at the manager
+    """
+    state.racelog_event_key = hashlib.md5(ir['WeekendInfo'].__repr__().encode('utf-8')).hexdigest()
+    register_data = {'key': state.racelog_event_key, 'manifests': {'car': CarsManifest, 'session': SessionManifest, 'pit': PitInfoManifest, 'message': MessagesManifest}}
+    data = {'procedure': 'racelog.register_provider', 'args': [register_data]}
+    resp = requests.post(f"{crossbarConfig.url}/call",     
+            headers={'Content-Type': 'application/json'},
+            json=data
+        )    
+    if (resp.status_code != 200):
+        print(f"warning: {resp.status_code}")
+    pass
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -106,6 +124,7 @@ def check_iracing():
         state.last_session_state = ir['SessionState']
         state.last_session_num = ir['SessionNum']
         state.last_session_unique_id = ir['SessionUniqueID']
+        register_service()
         print('irsdk connected')
 
 def handle_new_session():
