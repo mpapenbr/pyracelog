@@ -37,14 +37,23 @@ class MessageProcessor:
             'carClass': self.drivers.car_class(car_idx), 
             'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) entered car'})
     
-    def add_car_slow(self, car_idx):        
+    def add_car_slow(self, car_idx, speed):        
         self.msg_buffer.append({
             'type': 'Track',
             'subType':'Driver',
             'carIdx': car_idx, 
             'carNum': self.drivers.car_number(car_idx), 
             'carClass': self.drivers.car_class(car_idx), 
-            'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) car slow'})
+            'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) car slow ({speed})'})
+    
+    def add_timing_info(self, car_idx, msg):        
+        self.msg_buffer.append({
+            'type': 'Timing',
+            'subType':'Driver',
+            'carIdx': car_idx, 
+            'carNum': self.drivers.car_number(car_idx), 
+            'carClass': self.drivers.car_class(car_idx), 
+            'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) {msg}'})
 
     def manifest_output(self):
         return [[m[x] for x in MessagesManifest] for m in self.msg_buffer]

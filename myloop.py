@@ -663,6 +663,13 @@ def loop():
     # and you will get incosistent data
     ir.freeze_var_buffer_latest()
 
+    t = ir['SessionTime']
+    #print('session time:', t)
+    if t == 0.0:
+        # there are race situatione where the whole ir-Data are filled with 0 bytes. Get out of here imediately
+        logger.warning("Possible invalid data in ir - session time is 0.0. skipping loop")
+        return
+
     if ir['SessionUniqueID'] != 0 and ir['SessionUniqueID'] != state.last_session_unique_id:
         handle_new_session()
 

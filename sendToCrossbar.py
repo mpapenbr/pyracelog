@@ -70,7 +70,7 @@ def publish_current_state():
     msg = Message(type=MessageType.STATE.value, payload=stateMsg.__dict__)
 
     data = {'topic': f'{crossbarConfig.topic}.{state.racelog_event_key}', 'args': [msg.__dict__]}
-    json_data = json.dumps(data, ensure_ascii=False)
+    #json_data = json.dumps(data, ensure_ascii=False)
     to_publish = PublishItem(url=crossbarConfig.url, topic=f'{crossbarConfig.topic}.{state.racelog_event_key}', data=[msg.__dict__])
     q.put(to_publish)
     q.task_done()
@@ -93,7 +93,8 @@ def register_service():
         registers this timing provider at the manager
     """
     state.racelog_event_key = hashlib.md5(ir['WeekendInfo'].__repr__().encode('utf-8')).hexdigest()
-    register_data = {'key': state.racelog_event_key, 'manifests': {'car': CarsManifest, 'session': SessionManifest, 'pit': PitInfoManifest, 'message': MessagesManifest}}
+    logger.info(f"Registering with id {state.racelog_event_key}")
+    register_data = {'id': state.racelog_event_key, 'manifests': {'car': state.car_proc.manifest, 'session': SessionManifest, 'pit': PitInfoManifest, 'message': MessagesManifest}}
     data = {'procedure': 'racelog.register_provider', 'args': [register_data]}
     resp = requests.post(f"{crossbarConfig.url}/call",     
             headers={'Content-Type': 'application/json'},
@@ -102,6 +103,23 @@ def register_service():
     if (resp.status_code != 200):
         print(f"warning: {resp.status_code}")
     pass
+
+def unregister_service():
+    """
+        registers this timing provider at the manager
+    """
+    
+    unregister_data = {'id': state.racelog_event_key}
+    data = {'procedure': 'racelog.unregister_provider', 'args': [unregister_data]}
+    resp = requests.post(f"{crossbarConfig.url}/call",     
+            headers={'Content-Type': 'application/json'},
+            json=data
+        )    
+    if (resp.status_code != 200):
+        print(f"warning: {resp.status_code}")
+    pass
+
+
 
 # here we check if we are connected to iracing
 # so we can retrieve some data
@@ -270,5 +288,9 @@ if __name__ == '__main__':
             # cause iracing updates data with 60 fps
             time.sleep(1/60)
     except KeyboardInterrupt:        
+        # try:
+        #     unregister_service()
+        # except:
+        #     pass
         # press ctrl+c to exit
         pass
