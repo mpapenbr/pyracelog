@@ -220,7 +220,9 @@ def loop():
 
 
     if state.last_session_state != irsdk.SessionState.racing and ir['SessionState'] == irsdk.SessionState.racing:
+        logger.info(f'=== Race starts ===')
         state.pit_proc.race_starts(ir)
+        state.car_proc.race_starts(ir)
         state.last_session_state = ir['SessionState']
 
     state.pit_proc.process(ir)

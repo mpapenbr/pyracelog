@@ -188,27 +188,43 @@ class CarProcessor():
         if (st == None):
             return
         self.logger.debug(f"new standings arrived")
+        ob_idx = None
         for line in st:
             work = self.lookup.get(line['CarIdx'])
+            if work == None:
+                # may happen, if we reconnected during a race. At final standings there may be more entries than we thought there are ;)
+                work = CarData(self.manifest, len(self.sectors))
+                work['last'] = -1
+                work['best'] = -1
+                self.lookup[line['CarIdx']] = work
             work['pos'] = line['Position']
             work['pic'] = line['ClassPosition']
             work['gap'] = line['Time']
             work['best'] = line['FastestTime']
             duration = line['LastTime']
+            if duration == None:
+                # first lap, car may not crossed the line yet
+                self.logger.warning(f"duration is None for carNum {work['num']}")
+                continue
             if duration == -1:
                 duration = work.lap_timings.lap.duration
                 work['last'] = duration
             else:
+                work['last'] = duration
                 if duration < self.overall_best_lap:
-                    work['last'] = [duration, "ob"]                    
-                    self.overall_best_lap = duration
-                    msg_proc.add_timing_info(line['CarIdx'], f'new overall best lap {laptimeStr(duration)}')
-
-                elif duration == line['FastestTime']:
+                    ob_idx = line['CarIdx']
+                    work.current_best = duration                
+                    self.overall_best_lap = duration                
+                elif duration < work.current_best:
                     work['last'] = [duration, "pb"]                    
+                    work.current_best = duration
                     msg_proc.add_timing_info(line['CarIdx'], f'personal new best lap {laptimeStr(duration)}')
-                else:
-                    work['last'] = duration
+        
+        if ob_idx != None:
+            work = self.lookup.get(ob_idx)
+            duration = getattr(work, 'last')
+            work['last'] = [duration , "ob"]                                
+            msg_proc.add_timing_info(ob_idx, f'new overall best lap {laptimeStr(duration)}')
                     
         self.last_standings = st
 
@@ -255,9 +271,16 @@ class CarProcessor():
         duration = sector.mark_stop(t)
         # handle the colors for best sector
         if duration < self.overall_best_sectors[carData.current_sector]:
-            setattr(carData, f's{carData.current_sector+1}', [duration, "ob"])
+            setattr(carData, f's{carData.current_sector+1}', [duration, "ob"]) # +1 because auf s1,s2,s3...
             self.overall_best_sectors[carData.current_sector] = duration
             # TODO: if another car has also an "ob" sector, downgrade it to "pb" or "cb" ;)
+            manifest_sector = f's{carData.current_sector+1}'
+            for other in self.lookup.values():
+                if (other != carData):
+                    sector_data = getattr(other, manifest_sector)
+                    if type(sector_data) is list and sector_data[1] == 'ob':
+                        sector_data[1] = 'pb'
+
             sector.best = duration
         elif duration < sector.best:
             setattr(carData, f's{carData.current_sector+1}', [duration, "pb"])
@@ -286,6 +309,10 @@ class CarProcessor():
 
             carData.lap_timings.lap.mark_start(t)
 
+    def race_starts(self, ir):
+        t = ir['SessionTime']
+        for work in self.lookup.values():
+            work.lap_timings.lap.mark_start(t)
 
     def parkplatz(self):
         # do not call!
@@ -307,8 +334,6 @@ class CarProcessor():
             carData.lap_timings.lap.best = duration
             msg_proc.add_timing_info(car_idx, f'new personal best lap {laptimeStr(duration)}')
     
-    def race_starts(self, ir):
-        pass
 
 
 
