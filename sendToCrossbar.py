@@ -12,6 +12,8 @@ from model import Message, MessageType, StateMessage
 from queue import Queue
 from threading import Thread
 
+from enum import Enum
+
 import irsdk
 import time
 import asyncio
@@ -35,7 +37,86 @@ class ConfigSection():
         self.__dict__.update(entries)    
 
 
+class RaceStates(Enum):
+    INVALID = 0
+    RACING = 1
+    CHECKERED_ISSUED = 2
+    CHECKERED_DONE = 3
+
+class RaceState:
+    """
+    this class handles race sessions only. It is designed as a state machine. 
+    We are only interested in data once the green flag is issued and until all available cars have crossed the s/f with checkered flag
+    """
+    def __init__(self, msg_proc=None, pit_proc=None, car_proc=None, driver_proc=None, ir=None) -> None:
+        self.session_unique_id = -1
+        self.session_num = -1
+        self.msg_proc = msg_proc
+        self.pit_proc = pit_proc
+        self.car_proc = car_proc
+        self.driver_proc = driver_proc
+        self.state = RaceStates.INVALID
+        self.on_init_ir_state = ir['SessionState'] # used for "race starts" message
+        self.stateSwitch = {
+            RaceStates.INVALID: self.state_invalid,
+            RaceStates.RACING: self.state_racing,
+            RaceStates.CHECKERED_ISSUED: self.state_finishing,
+            RaceStates.CHECKERED_DONE: self.state_racing,
+        }
+
         
+
+    def reset(self):
+        pass
+
+    def state_invalid(self,ir):
+        if ir['SessionInfo']['Sessions'][ir['SessionNum']]['SessionType'] == 'Race':
+            if ir['SessionState'] == irsdk.SessionState.racing:
+                logger.info(f'=== Race state detected ===')
+                self.pit_proc.race_starts(ir)
+                self.car_proc.race_starts(ir)
+                self.state = RaceStates.RACING
+                if self.on_init_ir_state != ir['SessionState']:
+                    logger.info(f'real race start detected')
+                    self.msg_proc.add_race_starts()
+                    pass
+
+    def state_racing(self,ir):
+        if ir['SessionState'] == irsdk.SessionState.checkered:
+            logger.info(f'checkered flag issued')
+            self.state = RaceStates.CHECKERED_ISSUED
+            self.car_proc.checkered_flag(ir)
+            self.msg_proc.add_checkered_issued()
+            # need to check where the leader is now. has he already crossed s/f ? 
+            # (problem is a about to be lapped car in front of that car - which of course should not yet be considered as a finisher)
+            return 
+        self.pit_proc.process(ir)
+        # state.driver_proc.process(ir)
+        self.car_proc.process(ir, self.msg_proc)
+
+    def state_finishing(self,ir):
+
+        self.pit_proc.process(ir)        
+        self.car_proc.process(ir, self.msg_proc)
+
+
+    def handle_new_session(self,ir):
+        self.msg_proc.clear_buffer()
+        self.pit_proc.clear_buffer()
+        # state.car_proc.clear_buffer()
+        self.session_num = ir['SessionNum']
+        self.session_unique_id = ir['SessionUniqueID']
+        state.last_publish = -1
+        # state.last_data.speedmap = SpeedMap(state.track_length)
+        logger.info(f'new unique session detected: {self.session_unique_id} sessionNum: {self.session_num}')
+
+    def process(self, ir):        
+        # handle global changes here
+        if ir['SessionUniqueID'] != 0 and ir['SessionUniqueID'] != self.session_unique_id:
+            self.handle_new_session(ir)
+        # handle processing depending on current state
+        self.stateSwitch[self.state](ir)
+
 
 # this is our State class, with some helpful variables
 class State:
@@ -58,6 +139,7 @@ class State:
         self.pit_proc = None
         self.car_proc = None
         self.racelog_event_key = None
+        self.racestate = None
 
 def publish_current_state():
     # msg = Message(type=MessageType.STATE.value, payload={'session': {'sessionTime':ir['SessionTime']}})
@@ -76,17 +158,7 @@ def publish_current_state():
     q.task_done()
     state.msg_proc.clear_buffer()
     state.pit_proc.clear_buffer()
-
-    if False:
-        resp = requests.post(f"{crossbarConfig.url}/call",     
-            headers={'Content-Type': 'application/json'},
-            json=data
-        )    
-        if (resp.status_code != 200):
-            print(f"warning: {resp.status_code}")
-        else: 
-            state.msg_proc.clear_buffer()
-            state.pit_proc.clear_buffer()
+    
 
 def register_service():
     """
@@ -119,6 +191,16 @@ def unregister_service():
         print(f"warning: {resp.status_code}")
     pass
 
+# to be deleted! RaceState takes over
+def handle_new_session():
+    state.msg_proc.clear_buffer()
+    state.pit_proc.clear_buffer()
+    # state.car_proc.clear_buffer()
+    state.last_session_num = ir['SessionNum']
+    state.last_session_unique_id = ir['SessionUniqueID']
+    state.last_publish = -1
+    # state.last_data.speedmap = SpeedMap(state.track_length)
+    logger.info(f'new unique session detected: {state.last_session_unique_id} sessionNum: {state.last_session_num}')
 
 
 # here we check if we are connected to iracing
@@ -142,23 +224,56 @@ def check_iracing():
         state.last_session_state = ir['SessionState']
         state.last_session_num = ir['SessionNum']
         state.last_session_unique_id = ir['SessionUniqueID']
+        state.racestate = RaceState(state.msg_proc, state.pit_proc, state.car_proc, state.driver_proc, ir)
         register_service()
         print('irsdk connected')
 
-def handle_new_session():
-    state.msg_proc.clear_buffer()
-    state.pit_proc.clear_buffer()
-    # state.car_proc.clear_buffer()
-    state.last_session_num = ir['SessionNum']
-    state.last_session_unique_id = ir['SessionUniqueID']
-    state.last_publish = -1
-    # state.last_data.speedmap = SpeedMap(state.track_length)
-    logger.info(f'new unique session detected: {state.last_session_unique_id} sessionNum: {state.last_session_num}')
 
 
 # our main loop, where we retrieve data
 # and do something useful with it
 def loop():
+    # on each tick we freeze buffer with live telemetry
+    # it is optional, but useful if you use vars like CarIdxXXX
+    # this way you will have consistent data from those vars inside one tick
+    # because sometimes while you retrieve one CarIdxXXX variable
+    # another one in next line of code could change
+    # to the next iracing internal tick_count
+    # and you will get incosistent data
+    ir.freeze_var_buffer_latest()
+
+    # retrieve live telemetry data
+    # check here for list of available variables
+    # https://github.com/kutu/pyirsdk/blob/master/vars.txt
+    # this is not full list, because some cars has additional
+    # specific variables, like break bias, wings adjustment, etc
+    t = ir['SessionTime']
+    #print('session time:', t)
+    if t == 0.0:
+        # there are race situatione where the whole ir-Data are filled with 0 bytes. Get out of here imediately
+        logger.warning("Possible invalid data in ir - session time is 0.0. skipping loop")
+        return
+
+    if ir['DriverInfo']:
+        if (ir['DriverInfo'] != state.lastDI):
+            #print(ir['DriverInfo'])
+            state.lastDI = ir['DriverInfo'];
+            state.driver_proc.process(ir,state.msg_proc, state.pit_proc)
+
+    state.racestate.process(ir)
+    
+    #process_changes_to_last_run(state.last_data)
+    if ((t - state.last_publish) > 1):
+        # this is the point where we want to send the data to the server. 
+        # By now we just log something....
+        publish_current_state()
+        # print('session time:', t)
+        state.last_publish = t
+
+
+# our main loop, where we retrieve data
+# and do something useful with it
+def loopOld():
     # on each tick we freeze buffer with live telemetry
     # it is optional, but useful if you use vars like CarIdxXXX
     # this way you will have consistent data from those vars inside one tick

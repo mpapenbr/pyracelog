@@ -55,5 +55,24 @@ class MessageProcessor:
             'carClass': self.drivers.car_class(car_idx), 
             'msg': f'#{self.drivers.car_number(car_idx)} ({self.drivers.user_name(car_idx)}) {msg}'})
 
+
+    def add_race_starts(self):        
+        self.msg_buffer.append({
+            'type': 'Timing',
+            'subType':'RaceControl',
+            'carIdx': None, 
+            'carNum': None, 
+            'carClass': None, 
+            'msg': f'Race start'})
+
+    def add_checkered_issued(self):        
+        self.msg_buffer.append({
+            'type': 'Timing',
+            'subType':'RaceControl',
+            'carIdx': None, 
+            'carNum': None, 
+            'carClass': None, 
+            'msg': f'Checkered flag'})
+
     def manifest_output(self):
         return [[m[x] for x in MessagesManifest] for m in self.msg_buffer]

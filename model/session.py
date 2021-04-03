@@ -16,6 +16,8 @@ class SessionData:
         self.windVel = ir['WindVel']
         self.flagState = ""
         if ir['SessionState'] == SessionState.racing:
+            if ir['SessionFlags'] & Flags.start_hidden == Flags.start_hidden: # this seems to be true for spectators
+                self.flagState = 'GREEN'
             if ir['SessionFlags'] >> 16 & Flags.green:
                 self.flagState = 'GREEN'
             if ir['SessionFlags'] >> 16 & Flags.yellow:
