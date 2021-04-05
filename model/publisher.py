@@ -1,16 +1,22 @@
 
+import logging
 import threading
 import time 
 import json
 import gzip
+import logging
+import time
+
 from typing import Callable, Iterable, Optional, Any, Mapping
 from autobahn.asyncio.component import Component, run
 from urllib3 import request
 from queue import Queue
 
+
 import urllib3
 
-
+MAX_REDO = 5
+WAIT_FOR_REDO = 0.2 # time seconds
 class PublishItem:
     def __init__(self, url=None, topic=None, data=None) -> None:
         self.url = url        
@@ -36,15 +42,40 @@ def publish_to_server(q:Queue):
 
         data = {'topic': to_publish.topic, 'args': to_publish.data}
         json_data = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        compressed_data = gzip.compress(json_data)
+        #compressed_data = gzip.compress(json_data)
         #print(f'rawLen: {len(json_data)} compressed: {len(compressed_data)}')
-        resp = http.request('POST', f"{to_publish.url}/publish",     
-            headers={'Content-Type': 'application/json', },
-            body=json_data,
-            # body=compressed_data
-        )  
-        if resp.status != 200:
-            print(f'status: {resp.status} reason: {resp.reason}')
+
+        # sometimes we recieve a ConnectionError: RemoteDisconnected('Remote end closed connection without response')
+        # could not figure out who caused it and why (first detected when crossbar was running on remote server via ssl)
+        # for now: try to resend the data with a few attempts. if still not possible, log and ignore.
+        # TODO: have to find out if data was really not sent in such cases
+        # MP 2021-04-04
+        redo_count = 0
+        success = False
+        while success == False and redo_count < MAX_REDO:
+            try:
+                resp = http.request('POST', f"{to_publish.url}/publishIR",     
+                    headers={'Content-Type': 'application/json', },
+                    body=json_data,
+                    # stream=False
+                    # body=compressed_data
+                )  
+                # body = resp.data
+                if resp.status != 200:
+                    print(f'status: {resp.status} reason: {resp.reason}')
+                success = True
+            except urllib3.exceptions.ConnectionError:
+                success = False
+                redo_count += 1
+                logging.getLogger("publisher").warning(f"recieved ConnectionError. retry #{redo_count}")
+                time.sleep(WAIT_FOR_REDO)
+        if success == False:
+            
+            logging.getLogger("publisher").warning(f"could not send data\ndata:{json_data}")
+            # raise Exception("Could not send data")
+        if redo_count > 0:
+            logging.getLogger("publisher").info(f"sent data after {redo_count} attempts")
+
 
 class MyPublisherAB(threading.Thread):
     """
