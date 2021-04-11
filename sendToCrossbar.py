@@ -1,5 +1,6 @@
 import json
 import hashlib
+from os import system
 
 from model.cars import CarProcessor, CarsManifest
 from model.pits import PitInfoManifest, PitProcessor
@@ -13,7 +14,7 @@ from queue import Queue
 from threading import Thread
 
 from enum import Enum
-
+import sys
 import irsdk
 import time
 import asyncio
@@ -42,6 +43,7 @@ class RaceStates(Enum):
     RACING = 1
     CHECKERED_ISSUED = 2
     CHECKERED_DONE = 3
+    COOLDOWN = 4
 
 class RaceState:
     """
@@ -62,6 +64,7 @@ class RaceState:
             RaceStates.RACING: self.state_racing,
             RaceStates.CHECKERED_ISSUED: self.state_finishing,
             RaceStates.CHECKERED_DONE: self.state_racing,
+            RaceStates.COOLDOWN: self.state_cooldown,
         }
 
         
@@ -95,10 +98,20 @@ class RaceState:
         self.car_proc.process(ir, self.msg_proc)
 
     def state_finishing(self,ir):
+        if ir['SessionState'] == irsdk.SessionState.cool_down:
+            logger.info(f'all cars finished the race - get out of here')
+            self.state = RaceStates.COOLDOWN
+            return
 
         self.pit_proc.process(ir)        
         self.car_proc.process(ir, self.msg_proc)
 
+
+    def state_cooldown(self, ir ):
+        # TODO: think about shutting down only when specific config attribute is set to do so ;)
+        # for now it is ok.
+        unregister_service()
+        sys.exit(0)
 
     def handle_new_session(self,ir):
         self.msg_proc.clear_buffer()
@@ -107,6 +120,8 @@ class RaceState:
         self.session_num = ir['SessionNum']
         self.session_unique_id = ir['SessionUniqueID']
         state.last_publish = -1
+        self.state = RaceStates.INVALID
+        self.on_init_ir_state = ir['SessionState'] # used for "race starts" message
         # state.last_data.speedmap = SpeedMap(state.track_length)
         logger.info(f'new unique session detected: {self.session_unique_id} sessionNum: {self.session_num}')
 
@@ -199,6 +214,7 @@ def handle_new_session():
     state.last_session_num = ir['SessionNum']
     state.last_session_unique_id = ir['SessionUniqueID']
     state.last_publish = -1
+    state.racestate.handle_new_session(ir)
     # state.last_data.speedmap = SpeedMap(state.track_length)
     logger.info(f'new unique session detected: {state.last_session_unique_id} sessionNum: {state.last_session_num}')
 
@@ -214,6 +230,8 @@ def check_iracing():
         # we are shutting down ir library (clearing all internal variables)
         ir.shutdown()
         print('irsdk disconnected')
+        unregister_service()
+        sys.exit(0)
     elif not state.ir_connected and ir.startup() and ir.is_initialized and ir.is_connected:
         state.reset()
         state.ir_connected = True
@@ -262,87 +280,6 @@ def loop():
 
     state.racestate.process(ir)
     
-    #process_changes_to_last_run(state.last_data)
-    if ((t - state.last_publish) > 1):
-        # this is the point where we want to send the data to the server. 
-        # By now we just log something....
-        publish_current_state()
-        # print('session time:', t)
-        state.last_publish = t
-
-
-# our main loop, where we retrieve data
-# and do something useful with it
-def loopOld():
-    # on each tick we freeze buffer with live telemetry
-    # it is optional, but useful if you use vars like CarIdxXXX
-    # this way you will have consistent data from those vars inside one tick
-    # because sometimes while you retrieve one CarIdxXXX variable
-    # another one in next line of code could change
-    # to the next iracing internal tick_count
-    # and you will get incosistent data
-    ir.freeze_var_buffer_latest()
-
-    # retrieve live telemetry data
-    # check here for list of available variables
-    # https://github.com/kutu/pyirsdk/blob/master/vars.txt
-    # this is not full list, because some cars has additional
-    # specific variables, like break bias, wings adjustment, etc
-    t = ir['SessionTime']
-    #print('session time:', t)
-    if t == 0.0:
-        # there are race situatione where the whole ir-Data are filled with 0 bytes. Get out of here imediately
-        logger.warning("Possible invalid data in ir - session time is 0.0. skipping loop")
-        return
-
-    if ir['SessionUniqueID'] != 0 and ir['SessionUniqueID'] != state.last_session_unique_id:
-        handle_new_session()
-
-    # retrieve CarSetup from session data
-    # we also check if CarSetup data has been updated
-    # with ir.get_session_info_update_by_key(key)
-    # but first you need to request data, before checking if its updated
-    car_setup = ir['CarSetup']
-    if car_setup:
-        car_setup_tick = ir.get_session_info_update_by_key('CarSetup')
-        if car_setup_tick != state.last_car_setup_tick:
-            state.last_car_setup_tick = car_setup_tick
-            print('car setup update count:', car_setup['UpdateCount'])
-            # now you can go to garage, and do some changes with your setup
-            # this line will be printed, only when you change something
-            # and press apply button, but not every 1 sec
-    # note about session info data
-    # you should always check if data exists first
-    # before do something like ir['WeekendInfo']['TeamRacing']
-    # so do like this:
-    if ir['WeekendInfo']:
-        if (ir['WeekendInfo'] != state.lastWI):
-            print(ir['WeekendInfo'])
-            state.lastWI = ir['WeekendInfo'];
-        #print(ir['WeekendInfo']['TeamRacing'])
-
-
-    if ir['DriverInfo']:
-        if (ir['DriverInfo'] != state.lastDI):
-            #print(ir['DriverInfo'])
-            state.lastDI = ir['DriverInfo'];
-            state.driver_proc.process(ir,state.msg_proc, state.pit_proc)
-
-    if ir['SessionInfo']:
-        if (ir['SessionInfo'] != state.lastSI):
-            #print(ir['SessionInfo'])
-            state.lastSI = ir['SessionInfo'];
-
-
-    if state.last_session_state != irsdk.SessionState.racing and ir['SessionState'] == irsdk.SessionState.racing:
-        logger.info(f'=== Race starts ===')
-        state.pit_proc.race_starts(ir)
-        state.car_proc.race_starts(ir)
-        state.last_session_state = ir['SessionState']
-
-    state.pit_proc.process(ir)
-    # state.driver_proc.process(ir)
-    state.car_proc.process(ir, state.msg_proc)
     #process_changes_to_last_run(state.last_data)
     if ((t - state.last_publish) > 1):
         # this is the point where we want to send the data to the server. 
