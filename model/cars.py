@@ -333,7 +333,11 @@ class CarProcessor():
                 return carData
             else:
                 if len(self.about_to_finish_marker) > 0:
-                    if getattr(carData, "lc") > self.about_to_finish_marker[0][0]:
+                    lc = getattr(carData, "lc")
+                    lap = getattr(carData, "lap")
+                    ref = self.about_to_finish_marker[0][1]
+                    self.logger.info(f"car {car_num} lap: {lap} ref: {ref} bool: {lap > ref}")
+                    if lap > ref:
                         self.winner_crossed_the_line = True
                         carData['state'] = "FIN"
                         
@@ -357,7 +361,7 @@ class CarProcessor():
         # (Note: does not work if all cars currently on the leading lap do not reach the s/f)
         current_order = self.get_current_raceorder()
         self.about_to_finish_marker = current_order
-
+        self.logger.info(f"about to finish marker: {self.about_to_finish_marker}")
 
     def get_current_raceorder(self):
         current_race_order = [(i.carIdx, i.lap+i.trackPos)  for i in self.lookup.values() if type(i.carIdx) == int ]

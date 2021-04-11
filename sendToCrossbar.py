@@ -99,7 +99,10 @@ class RaceState:
 
     def state_finishing(self,ir):
         if ir['SessionState'] == irsdk.SessionState.cool_down:
-            logger.info(f'all cars finished the race - get out of here')
+            # TODO: at this point the last car may not be processed in the standings. check when time
+            # idea: separate into two state: cooldown_issued. after  5s  all missing data should be processed. After that terminate.
+            self.car_proc.process(ir, self.msg_proc)
+            logger.info(f'cooldown signaled - get out of here')
             self.state = RaceStates.COOLDOWN
             return
 
@@ -110,8 +113,11 @@ class RaceState:
     def state_cooldown(self, ir ):
         # TODO: think about shutting down only when specific config attribute is set to do so ;)
         # for now it is ok.
+        logger.info(f'cooldown reached. unregister service')
         unregister_service()
+        logger.info(f'unregister called')
         sys.exit(0)
+        logger.error(f'should not see this')
 
     def handle_new_session(self,ir):
         self.msg_proc.clear_buffer()
@@ -196,8 +202,8 @@ def unregister_service():
         registers this timing provider at the manager
     """
     
-    unregister_data = {'id': state.racelog_event_key}
-    data = {'procedure': 'racelog.unregister_provider', 'args': [unregister_data]}
+    # unregister_data = {'id': state.racelog_event_key}
+    data = {'procedure': 'racelog.remove_provider', 'args': [state.racelog_event_key]}
     resp = requests.post(f"{crossbarConfig.url}/call",     
             headers={'Content-Type': 'application/json'},
             json=data
