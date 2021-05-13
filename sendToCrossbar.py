@@ -44,6 +44,7 @@ class RaceStates(Enum):
     CHECKERED_ISSUED = 2
     CHECKERED_DONE = 3
     COOLDOWN = 4
+    TERMINATE = 5
 
 class RaceState:
     """
@@ -65,6 +66,7 @@ class RaceState:
             RaceStates.CHECKERED_ISSUED: self.state_finishing,
             RaceStates.CHECKERED_DONE: self.state_racing,
             RaceStates.COOLDOWN: self.state_cooldown,
+            RaceStates.TERMINATE: self.state_terminate,
         }
 
         
@@ -104,16 +106,28 @@ class RaceState:
             self.car_proc.process(ir, self.msg_proc)
             logger.info(f'cooldown signaled - get out of here')
             self.state = RaceStates.COOLDOWN
+            self.cooldown_signaled = time.time()
             return
 
         self.pit_proc.process(ir)        
         self.car_proc.process(ir, self.msg_proc)
 
+    def state_cooldown(self, ir):
+        """
+        on cooldown notice we want to stay 5 more secs active to get the latest standings.
+        """
+        if (time.time() - self.cooldown_signaled) < 5:
+            self.car_proc.process(ir, self.msg_proc)
+            return
+        else: 
+            logger.info(f'internal cooldown phase done. Terminating now')
+            self.state = RaceStates.TERMINATE
+            return
 
-    def state_cooldown(self, ir ):
+    def state_terminate(self, ir ):
         # TODO: think about shutting down only when specific config attribute is set to do so ;)
         # for now it is ok.
-        logger.info(f'cooldown reached. unregister service')
+        logger.info(f'unregister service')
         unregister_service()
         logger.info(f'unregister called')
         sys.exit(0)
