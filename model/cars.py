@@ -48,6 +48,15 @@ def coalesce(arg):
         return arg
     return 0
 
+def get_track_length_in_meters(arg:str) -> float:
+    milesInKm = 1.60934
+    m = re.search(r'(?P<length>(\d+\.\d+)) (?P<unit>(km|mi))', arg) 
+    if (m.group('unit') == 'mi'):
+        return float(m.group('length')) * milesInKm * 1000;
+    else:
+        return float(m.group('length')) * 1000
+
+
 
 class SectionTiming:
     """
@@ -188,10 +197,14 @@ class CarData:
 
     def state_out_of_race(self, ir):
         self.copy_standards(ir)        
-        # this may happen after resets or tow to pit road
+        # this may happen after resets or tow to pit road. if not on the pit road it may just be a short connection issue.
         if ir['CarIdxOnPitRoad'][self.carIdx]:
             self.state = "PIT"
             self.processState = CarState.PIT
+        else:            
+            if ir['CarIdxLapDistPct'][self.carIdx] > -1:
+                self.state = "RUN"
+                self.processState = CarState.RUN
 
     def process(self, ir):        
         # handle processing depending on current state
@@ -265,12 +278,7 @@ class CarProcessor():
         self.about_to_finish_marker = [] # will be set when checkered flag is issues
         self.winner_crossed_the_line = False # you guess when it will be true
 
-        milesInKm = 1.60934
-        m = re.search(r'(?P<length>(\d+\.\d+)) (?P<unit>(km|mi))', current_ir['WeekendInfo']['TrackLength']) 
-        if (m.group('unit') == 'mi'):
-            self.track_length = float(m.group('length')) * milesInKm * 1000;
-        else:
-            self.track_length =  float(m.group('length')) * 1000
+        self.track_length = get_track_length_in_meters(current_ir['WeekendInfo']['TrackLength'])
         print(f"TrackLength: {self.track_length}")
         self.min_move_dist_pct = 0.1/self.track_length # if a car doesn't move 10cm in 1/60s 
         self.last_standings = current_ir['SessionInfo']['Sessions'][current_ir['SessionNum']]['ResultsPositions']

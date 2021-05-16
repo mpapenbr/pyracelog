@@ -1,8 +1,9 @@
 import json
 import hashlib
+
 from os import system
 
-from model.cars import CarProcessor, CarsManifest
+from model.cars import CarProcessor, get_track_length_in_meters, CarsManifest
 from model.pits import PitInfoManifest, PitProcessor
 from model.driver import DriverProcessor
 from model.msgproc import MessageProcessor, MessagesManifest
@@ -14,6 +15,7 @@ from queue import Queue
 from threading import Thread
 
 from enum import Enum
+from datetime import datetime
 import sys
 import irsdk
 import time
@@ -195,13 +197,32 @@ def publish_current_state():
     state.pit_proc.clear_buffer()
     
 
+    
+
+def collect_event_info():
+    info = {}
+    wi = ir['WeekendInfo']
+    info['trackId'] = wi['TrackID']
+    info['teamRacing'] =wi['TeamRacing']
+    info['irSessionId'] = wi['SessionID']
+    info['trackDisplayName'] = wi['TrackDisplayName']
+    info['trackDisplayShortName'] = wi['TrackDisplayShortName']
+    info['trackConfigName'] = wi['TrackConfigName']
+    info['trackLength'] = get_track_length_in_meters(wi['TrackLength'])
+    info['eventTime'] = datetime.strptime(f"{wi['WeekendOptions']['Date']} {wi['WeekendOptions']['TimeOfDay']}", "%Y-%m-%d %I:%M %p").isoformat()
+    info['sectors'] = ir['SplitTimeInfo']['Sectors']
+    return info
 def register_service():
     """
         registers this timing provider at the manager
     """
     state.racelog_event_key = hashlib.md5(ir['WeekendInfo'].__repr__().encode('utf-8')).hexdigest()
     logger.info(f"Registering with id {state.racelog_event_key}")
-    register_data = {'id': state.racelog_event_key, 'manifests': {'car': state.car_proc.manifest, 'session': SessionManifest, 'pit': PitInfoManifest, 'message': MessagesManifest}}
+    register_data = {
+        'id': state.racelog_event_key, 
+        'manifests': {'car': state.car_proc.manifest, 'session': SessionManifest, 'pit': PitInfoManifest, 'message': MessagesManifest},
+        'info': collect_event_info()
+        }
     data = {'procedure': 'racelog.register_provider', 'args': [register_data]}
     resp = requests.post(f"{crossbarConfig.url}/call",     
             headers={'Content-Type': 'application/json'},
