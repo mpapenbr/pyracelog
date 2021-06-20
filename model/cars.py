@@ -97,15 +97,61 @@ class CarState(Enum):
     OUT = 4
     SLOW = 5
 
-
+class PitBoundaryData:
+    """
+    @param keep_hist use at most this many entries for computation
     
+    @param min_hist build up at least this many entries before deciding about which entries to keep.
+    """
+    def __init__(self, keep_hist=21, min_hist=3) -> None:
+        
+        self.min = 0
+        self.max = 0        
+        self.middle = 0
+        self.hist = []
+        self.keep_hist = keep_hist
+        self.min_hist = min_hist
+    
+    def process(self, trackPos):
+        """
+        process the given trackPos. while 
+        """
+        if len(self.hist) < self.keep_hist:
+            self.hist.append(trackPos)            
+            self.compute_values()
+            return 
+        self.hist.append(trackPos)
+        
+        if len(self.hist) % 2 == 1:            
+            self.hist.sort()
+            self.hist = self.hist[1:-1]
+    
+    def compute_values(self):
+        self.min = self.hist[0]
+        self.max = self.hist[-1]
+        self.middle = self.hist[len(self.hist)>>1]
 
+    def __repr__(self) -> str:
+        tmp = ", ".join([f"{e}" for e in self.hist] )
+        return f'PitBoundaryData min: {self.min} max: {self.max} avg: {self.middle} hist: {tmp}'
+
+class PitBoundaries():
+    def __init__(self) -> None:        
+        self.pit_entry_boundary = PitBoundaryData()
+        self.pit_exit_boundary = PitBoundaryData()
+    
+    def process_entry(self, trackPos):
+        self.pit_entry_boundary.process(trackPos)
+    def process_exit(self, trackPos):
+        self.pit_exit_boundary.process(trackPos)
+    def __repr__(self) -> str:
+        return f'PitEntry: {self.pit_entry_boundary}\nPitExit: {self.pit_exit_boundary}\n'
 class CarData:
     """
     this class holds data about a car during a race. 
     No data history is stored here.
     """
-    def __init__(self,carIdx=None, manifest=CarsManifest,num_sectors=0, driver_proc=None) -> None:
+    def __init__(self,carIdx=None, manifest=CarsManifest,num_sectors=0, driver_proc=None, pit_boundaries=None) -> None:
         self.logger = logging.getLogger(self.__class__.__name__)
         for item in manifest:
             self.__setattr__(item, "")
@@ -116,6 +162,7 @@ class CarData:
         self.current_sector = -1
         self.driver_proc = driver_proc
         self.lap_timings = CarLaptiming(num_sectors=num_sectors)
+        self.pit_boundaries = pit_boundaries
 
         
         self.processState = CarState.INIT
@@ -167,6 +214,7 @@ class CarData:
         if ir['CarIdxOnPitRoad'][self.carIdx]:
             self.state = "PIT"
             self.processState = CarState.PIT
+            self.pit_boundaries.process_entry(ir['CarIdxLapDistPct'][self.carIdx])
 
     def state_racing_slow(self, ir):
         self.copy_standards(ir)
@@ -178,6 +226,7 @@ class CarData:
         if ir['CarIdxOnPitRoad'][self.carIdx]:
             self.state = "PIT"
             self.processState = CarState.PIT
+            self.pit_boundaries.process_entry(ir['CarIdxLapDistPct'][self.carIdx])
 
     
     def state_pitting(self, ir):
@@ -190,6 +239,7 @@ class CarData:
         if ir['CarIdxOnPitRoad'][self.carIdx] == 0:    
             self.state = "RUN"
             self.processState = CarState.RUN
+            self.pit_boundaries.process_exit(ir['CarIdxLapDistPct'][self.carIdx])
 
     def state_finished(self, ir):
         # self.logger.debug(f"carIdx {self.carIdx} finished the race.")
@@ -283,6 +333,7 @@ class CarProcessor():
         self.min_move_dist_pct = 0.1/self.track_length # if a car doesn't move 10cm in 1/60s 
         self.last_standings = current_ir['SessionInfo']['Sessions'][current_ir['SessionNum']]['ResultsPositions']
         self.speedmap = SpeedMap(self.track_length)
+        self.pit_boundaries = PitBoundaries()
 
     def collect_caridx_to_process(self, ir):
         ret = [item['CarIdx'] for item in filter(lambda d: d['IsSpectator']==0 and d['CarIsPaceCar']==0,ir['DriverInfo']['Drivers'])]
@@ -291,7 +342,7 @@ class CarProcessor():
     def process(self,ir,msg_proc):
         for idx in self.collect_caridx_to_process(ir):     
             if idx not in self.lookup.keys():
-                work = CarData(carIdx=idx,manifest=self.manifest, num_sectors=len(self.sectors), driver_proc=self.driver_proc)
+                work = CarData(carIdx=idx,manifest=self.manifest, num_sectors=len(self.sectors), driver_proc=self.driver_proc,pit_boundaries=self.pit_boundaries)
                 work.last = -1
                 work.best = -1
                 self.lookup[idx] = work

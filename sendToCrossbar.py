@@ -177,6 +177,7 @@ class State:
         self.car_proc = None
         self.racelog_event_key = None
         self.racestate = None
+        self.track_info = None
 
 def publish_current_state():
     # msg = Message(type=MessageType.STATE.value, payload={'session': {'sessionTime':ir['SessionTime']}})
@@ -212,10 +213,28 @@ def collect_event_info():
     info['eventTime'] = datetime.strptime(f"{wi['WeekendOptions']['Date']} {wi['WeekendOptions']['TimeOfDay']}", "%Y-%m-%d %I:%M %p").isoformat()
     info['sectors'] = ir['SplitTimeInfo']['Sectors']
     return info
+
+def collect_track_info():
+    """
+        collects the basic track info from iRacing
+    """
+    wi = ir['WeekendInfo']
+    info = {}
+    info['trackId'] = wi['TrackID']        
+    info['trackDisplayName'] = wi['TrackDisplayName']
+    info['trackDisplayShortName'] = wi['TrackDisplayShortName']
+    info['trackConfigName'] = wi['TrackConfigName']
+    info['trackLength'] = get_track_length_in_meters(wi['TrackLength'])
+    info['sectors'] = ir['SplitTimeInfo']['Sectors']
+    # note: pitBoundaries are collected during the race
+    return info
+    
+
 def register_service():
     """
         registers this timing provider at the manager
     """
+    state.track_info = collect_track_info() # we need this later on unregister
     state.racelog_event_key = hashlib.md5(ir['WeekendInfo'].__repr__().encode('utf-8')).hexdigest()
     logger.info(f"Registering with id {state.racelog_event_key}")
     register_data = {
@@ -234,9 +253,20 @@ def register_service():
 
 def unregister_service():
     """
-        registers this timing provider at the manager
+        unregisters this timing provider at the manager
     """
-    
+
+    print(state.car_proc.pit_boundaries)
+
+    track_data = state.track_info
+    track_data['pit'] = {'entry': state.car_proc.pit_boundaries.pit_entry_boundary.middle, 'exit': state.car_proc.pit_boundaries.pit_exit_boundary.middle}
+    data = {'procedure': 'racelog.store_event_extra_data', 'args': [state.racelog_event_key, {'track':track_data}]}
+    print(f"{data}")
+    resp = requests.post(f"{crossbarConfig.url}/call",     
+            headers={'Content-Type': 'application/json'},
+            json=data
+        )    
+
     # unregister_data = {'id': state.racelog_event_key}
     data = {'procedure': 'racelog.remove_provider', 'args': [state.racelog_event_key]}
     resp = requests.post(f"{crossbarConfig.url}/call",     
@@ -245,6 +275,9 @@ def unregister_service():
         )    
     if (resp.status_code != 200):
         print(f"warning: {resp.status_code}")
+
+    
+
     pass
 
 # to be deleted! RaceState takes over
