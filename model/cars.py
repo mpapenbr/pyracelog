@@ -5,7 +5,7 @@ import math
 from speedmap import SpeedMap
 from enum import Enum
 
-CarsManifest = ['state','carIdx','carNum','userName','teamName','carClass','pos','pic','lap','lc','gap','interval','trackPos','speed','dist','pit','last','best']
+CarsManifest = ['state','carIdx','carNum','userName','teamName','carClass','pos','pic','lap','lc','gap','interval','trackPos','speed','dist','pitstops', 'stintLap','last','best']
 
 
     
@@ -160,6 +160,8 @@ class CarData:
         self.manifest = manifest
         self.slow_marker = False
         self.current_sector = -1
+        self.stintLap = 0
+        self.pitstops  = 0
         self.driver_proc = driver_proc
         self.lap_timings = CarLaptiming(num_sectors=num_sectors)
         self.pit_boundaries = pit_boundaries
@@ -199,6 +201,7 @@ class CarData:
             self.copy_when_racing(ir)
             self.state = "PIT"
             self.processState = CarState.PIT
+            self.stintLap = 0
         else:        
             self.copy_when_racing(ir)
             self.state = "RUN"        
@@ -210,9 +213,14 @@ class CarData:
             self.state= "OUT"
             self.processState = CarState.OUT
             return 
+
+        if ir['CarIdxOnPitRoad'][self.carIdx] == False and ir['CarIdxLapCompleted'][self.carIdx]>self.lc:
+            self.stintLap += 1
+
         self.copy_when_racing(ir)
         if ir['CarIdxOnPitRoad'][self.carIdx]:
             self.state = "PIT"
+            self.pitstops += 1
             self.processState = CarState.PIT
             self.pit_boundaries.process_entry(ir['CarIdxLapDistPct'][self.carIdx])
 
@@ -225,6 +233,7 @@ class CarData:
         self.copy_when_racing(ir)
         if ir['CarIdxOnPitRoad'][self.carIdx]:
             self.state = "PIT"
+            self.pitstops += 1
             self.processState = CarState.PIT
             self.pit_boundaries.process_entry(ir['CarIdxLapDistPct'][self.carIdx])
 
@@ -238,7 +247,8 @@ class CarData:
         self.copy_when_racing(ir)
         if ir['CarIdxOnPitRoad'][self.carIdx] == 0:    
             self.state = "RUN"
-            self.processState = CarState.RUN
+            self.stintLap = 1
+            self.processState = CarState.RUN            
             self.pit_boundaries.process_exit(ir['CarIdxLapDistPct'][self.carIdx])
 
     def state_finished(self, ir):
@@ -306,7 +316,7 @@ class CarData:
         self.dist = 0                
         self.interval = 0        
 
-    def manifest_output(self):
+    def manifest_output(self):        
         return [self.__getattribute__(x) for x in self.manifest]
 
 
@@ -494,7 +504,10 @@ class CarProcessor():
         if (i == 0):          
             self.logger.info(f"car {car_num} crossed the line")
             
-                                    
+            ## TODO: StintLaps berechnen
+            # mal schauen, ob das so geht. Evtl. noch Sonderbehandlung für Racefinish
+            #carData.stintLap += 1
+
             if carData.lap_timings.lap.start_time == -1:
                 self.logger.info(f"car {car_num} had start_time of -1. not recording this one")
             else:
@@ -504,6 +517,7 @@ class CarProcessor():
                 carData.processState = CarState.FINISHED
                 # we don't want the cool down lap to be counted
                 carData.lap = getattr(carData, "lc")
+                carData.stintLap -= 1 # remove +1 from above
                 self.logger.info(f"car {car_num} finished the race")
                 return carData
             else:
@@ -518,6 +532,7 @@ class CarProcessor():
                         carData.processState = CarState.FINISHED
                         # we don't want the cool down lap to be counted
                         carData.lap = lc
+                        carData.stintLap -= 1 # remove +1 from above
                         # setattr(carData, "state", "FIN")
                         self.logger.info(f"car {car_num} won the race")
                         return carData 
