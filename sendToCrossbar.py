@@ -212,6 +212,12 @@ def collect_event_info():
     info['trackLength'] = get_track_length_in_meters(wi['TrackLength'])
     info['eventTime'] = datetime.strptime(f"{wi['WeekendOptions']['Date']} {wi['WeekendOptions']['TimeOfDay']}", "%Y-%m-%d %I:%M %p").isoformat()
     info['sectors'] = ir['SplitTimeInfo']['Sectors']
+    if args.name == None:
+        timestr = datetime.now().strftime("%Y-%m-%d-%H%M")                
+        info['name'] = f"{info['trackDisplayName']} {timestr}"
+    else:                        
+        info['name'] = args.name
+    info['description'] = args.description
     return info
 
 def collect_track_info():
@@ -373,6 +379,8 @@ if __name__ == '__main__':
     parser.add_argument('--url', help='sets the url for the backend')
     parser.add_argument('--crossbar', help='sets the url for the backend')
     parser.add_argument('--config',  help='use this config file', default="config.yaml")
+    parser.add_argument('--name',  help='event name in listing. (<trackName> <YYYY-mm-dd HH:MM> if no value is provided) ')
+    parser.add_argument('--description',  help='additional event description')
         
     #args = parser.parse_known_args()
     args = parser.parse_args()
