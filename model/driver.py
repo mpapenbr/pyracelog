@@ -25,6 +25,11 @@ class DriverProcessor():
         return self.lookup[car_idx]['CarClassShortName']
     def car_class_id(self, car_idx):
         return self.lookup[car_idx]['CarClassID']
+    def car(self, car_idx):
+        return self.lookup[car_idx]['CarScreenNameShort']
+    def car_id(self, car_idx):
+        return self.lookup[car_idx]['CarID']
+
     def car_number(self, car_idx):
         return self.lookup[car_idx]['CarNumber']
     def car_num_raw(self, car_idx):

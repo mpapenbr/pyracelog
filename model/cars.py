@@ -5,7 +5,7 @@ import math
 from speedmap import SpeedMap
 from enum import Enum
 
-CarsManifest = ['state','carIdx','carNum','userName','teamName','carClass','pos','pic','lap','lc','gap','interval','trackPos','speed','dist','pitstops', 'stintLap','last','best']
+CarsManifest = ['state','carIdx','carNum','userName','teamName','car','carClass','pos','pic','lap','lc','gap','interval','trackPos','speed','dist','pitstops', 'stintLap','last','best']
 
 
     
@@ -306,6 +306,7 @@ class CarData:
         self.userName = self.driver_proc.user_name(self.carIdx)
         self.teamName = self.driver_proc.team_name(self.carIdx)
         self.carClass = self.driver_proc.car_class(self.carIdx)
+        self.car = self.driver_proc.car(self.carIdx)
 
     def copy_when_racing(self, ir):
         self.trackPos = gate(ir['CarIdxLapDistPct'][self.carIdx])
